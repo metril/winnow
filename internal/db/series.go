@@ -109,25 +109,34 @@ func (d *DB) MultiSeries(ctx context.Context, ids []int64, since, until *time.Ti
 	return out, rows.Err()
 }
 
-// ReferenceSeries returns the plug power series over a window (1-min buckets).
-func (d *DB) ReferenceSeries(ctx context.Context, entity string, start, end time.Time) ([]MultiSeriesPoint, error) {
-	q := `SELECT time_bucket('1 minute', ts) AS b, avg(power_w) AS p
-	      FROM reference_samples
-	      WHERE ts BETWEEN $1 AND $2 AND ($3 = '' OR entity_id = $3)
-	      GROUP BY b ORDER BY b`
-	rows, err := d.pool.Query(ctx, q, start, end, entity)
+// AggregateSeries returns the TOTAL monitored power over a window: per entity
+// last-value-carried-forward on a bucket grid (TimescaleDB gapfill+locf), summed
+// across the configured set. One entity = that single sensor; many = the sum.
+func (d *DB) AggregateSeries(ctx context.Context, entities []string, start, end time.Time, bucket string) ([]MultiSeriesPoint, error) {
+	out := []MultiSeriesPoint{}
+	if len(entities) == 0 {
+		return out, nil
+	}
+	q := fmt.Sprintf(`
+WITH per_entity AS (
+  SELECT time_bucket_gapfill('%s', ts) AS b, entity_id, locf(avg(power_w)) AS w
+  FROM reference_samples
+  WHERE entity_id = ANY($1) AND ts >= $2 AND ts <= $3
+  GROUP BY b, entity_id)
+SELECT b, sum(coalesce(w,0)) AS power FROM per_entity GROUP BY b ORDER BY b`,
+		bucketInterval(bucket))
+	rows, err := d.pool.Query(ctx, q, entities, start, end)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []MultiSeriesPoint{}
 	for rows.Next() {
 		var b time.Time
 		var p float64
 		if err := rows.Scan(&b, &p); err != nil {
 			return nil, err
 		}
-		out = append(out, MultiSeriesPoint{Bucket: b.UTC().Format(time.RFC3339Nano), Value: p})
+		out = append(out, MultiSeriesPoint{Bucket: b.UTC().Format(time.RFC3339Nano), Value: round(p, 1)})
 	}
 	return out, rows.Err()
 }

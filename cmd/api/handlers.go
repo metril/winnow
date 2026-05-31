@@ -309,10 +309,12 @@ func (s *server) handleIntegrationsStatus(w http.ResponseWriter, r *http.Request
 	}
 	mqOK, _ := mqttReachable(cfg.MQTTHost, cfg.MQTTPort)
 	pub, _ := s.d.MetersForPublish(r.Context())
+	floor := s.d.MonitoredFloor(r.Context(), cfg.MonitoredEntities, time.Now().Add(-24*time.Hour), time.Now())
 	writeJSON(w, map[string]any{
 		"ha_ok": haOK, "mqtt_ok": mqOK,
-		"reference_entity": cfg.ReferenceEntity,
-		"published":        pub,
+		"monitored_entities": cfg.MonitoredEntities,
+		"monitored_floor_w":  floor,
+		"published":          pub,
 	})
 }
 
@@ -334,12 +336,58 @@ func (s *server) handlePowerEntities(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, []ha.Entity{})
 		return
 	}
-	ents, err := ha.New(cfg.HAURL, cfg.HAToken).PowerSensors(r.Context())
+	ents, err := ha.New(cfg.HAURL, cfg.HAToken).MonitorableSensors(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), 502)
 		return
 	}
 	writeJSON(w, ents)
+}
+
+// handleCreateHelper asks HA to create a Group "sum" sensor over the selected
+// entities, then sets it as the monitored set. Falls back to an error the UI
+// turns into manual-setup instructions.
+func (s *server) handleCreateHelper(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name     string   `json:"name"`
+		Entities []string `json:"entities"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Entities) == 0 {
+		badReq(w, "need name + entities")
+		return
+	}
+	if body.Name == "" {
+		body.Name = "winnow monitored power"
+	}
+	cfg, _ := s.d.LoadConfig(r.Context())
+	if !cfg.HAConfigured() {
+		http.Error(w, "Home Assistant not configured", 400)
+		return
+	}
+	client := ha.New(cfg.HAURL, cfg.HAToken)
+	// device_class = energy only if every selected entity is energy, else power.
+	deviceClass := "power"
+	if kinds, err := client.EntityKinds(r.Context(), body.Entities); err == nil {
+		allEnergy := true
+		for _, e := range body.Entities {
+			if kinds[e] != "energy" {
+				allEnergy = false
+				break
+			}
+		}
+		if allEnergy {
+			deviceClass = "energy"
+		}
+	}
+	entityID, err := client.CreateGroupSum(r.Context(), body.Name, body.Entities, deviceClass)
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	blob, _ := json.Marshal([]string{entityID})
+	_ = s.d.SetSetting(r.Context(), config.KeyMonitoredEntities, string(blob))
+	_ = s.d.NotifyConfig(r.Context())
+	writeJSON(w, map[string]any{"ok": true, "entity_id": entityID})
 }
 
 // --- identify ---------------------------------------------------------------
@@ -354,20 +402,22 @@ func (s *server) handleIdentify(w http.ResponseWriter, r *http.Request) {
 	}
 	end := time.Now().UTC()
 	start := end.Add(-time.Duration(hours * float64(time.Hour)))
-	ranking, err := s.d.CorrelationVsReference(r.Context(), cfg.ReferenceEntity, start, end)
+	ranking, floor, err := s.d.CorrelationVsReference(r.Context(), cfg.MonitoredEntities, start, end)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	writeJSON(w, map[string]any{
 		"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339),
-		"entity": cfg.ReferenceEntity, "ranking": ranking,
+		"monitored_entities": cfg.MonitoredEntities,
+		"monitored_floor_w":  floor,
+		"ranking":            ranking,
 	})
 }
 
 func (s *server) handleIdentifyAuto(w http.ResponseWriter, r *http.Request) {
 	cfg, _ := s.d.LoadConfig(r.Context())
-	res, err := s.d.IdentifyAuto(r.Context(), cfg.ReferenceEntity)
+	res, err := s.d.IdentifyAuto(r.Context(), cfg.MonitoredEntities)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -379,7 +429,11 @@ func (s *server) handleReferenceSeries(w http.ResponseWriter, r *http.Request) {
 	cfg, _ := s.d.LoadConfig(r.Context())
 	start := timeParam(r, "start", time.Now().Add(-2*time.Hour))
 	end := timeParam(r, "end", time.Now())
-	out, err := s.d.ReferenceSeries(r.Context(), cfg.ReferenceEntity, *start, *end)
+	bucket := r.URL.Query().Get("bucket")
+	if bucket == "" {
+		bucket = "5m"
+	}
+	out, err := s.d.AggregateSeries(r.Context(), cfg.MonitoredEntities, *start, *end, bucket)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

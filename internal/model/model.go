@@ -72,6 +72,12 @@ type CorrRow struct {
 	BaselineRate  float64  `json:"baseline_rate"`
 	WindowPackets int64    `json:"window_packets"`
 	PlugEnergyWh  *float64 `json:"plug_energy_wh"` // ground-truth energy over the window
+	// regression of the meter's per-minute delta vs aggregate monitored power:
+	R2                  *float64 `json:"r2"`
+	Slope               *float64 `json:"slope"`                // meter-units/min per W
+	BaselineW           *float64 `json:"baseline_w"`           // unmonitored baseline (intercept)
+	SuggestedMultiplier *float64 `json:"suggested_multiplier"` // kWh per meter-unit
+	FloorOK             *bool    `json:"floor_ok"`             // calibrated min ≥ monitored floor
 }
 
 // TestWindow is a load-test span (manual or auto from the plug).

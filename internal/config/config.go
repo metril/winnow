@@ -5,20 +5,25 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Setting keys as stored in the DB `settings` table.
 const (
-	KeyHAURL             = "ha_url"
-	KeyHAToken           = "ha_token"
-	KeyMQTTHost          = "mqtt_host"
-	KeyMQTTPort          = "mqtt_port"
-	KeyMQTTUser          = "mqtt_user"
-	KeyMQTTPass          = "mqtt_pass"
-	KeyMQTTPrefix        = "mqtt_prefix"
-	KeyReferenceEntity   = "reference_entity"
+	KeyHAURL      = "ha_url"
+	KeyHAToken    = "ha_token"
+	KeyMQTTHost   = "mqtt_host"
+	KeyMQTTPort   = "mqtt_port"
+	KeyMQTTUser   = "mqtt_user"
+	KeyMQTTPass   = "mqtt_pass"
+	KeyMQTTPrefix = "mqtt_prefix"
+	// KeyMonitoredEntities is a JSON array of HA entity_ids whose summed power is
+	// the "total monitored consumption" ground truth. One entity = a single
+	// pre-aggregated sensor (power or energy/utility_meter); many = winnow sums.
+	KeyMonitoredEntities = "monitored_entities"
 	KeyThresholdW        = "threshold_w"
 	KeyDefaultMultiplier = "default_multiplier"
 	KeyDefaultUnit       = "default_unit"
@@ -36,10 +41,35 @@ type Config struct {
 	MQTTUser          string
 	MQTTPass          string
 	MQTTPrefix        string
-	ReferenceEntity   string
+	MonitoredEntities []string
 	ThresholdW        float64
 	DefaultMultiplier float64
 	DefaultUnit       string
+}
+
+// parseEntities accepts a JSON array or a comma-separated list of entity_ids.
+func parseEntities(v string) []string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	if strings.HasPrefix(v, "[") {
+		var out []string
+		if json.Unmarshal([]byte(v), &out) == nil {
+			return cleanEntities(out)
+		}
+	}
+	return cleanEntities(strings.Split(v, ","))
+}
+
+func cleanEntities(in []string) []string {
+	out := []string{}
+	for _, e := range in {
+		if e = strings.TrimSpace(e); e != "" {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func env(k, def string) string {
@@ -74,7 +104,7 @@ func FromMap(m map[string]string) Config {
 		MQTTUser:          get(KeyMQTTUser, "MQTT_USER", ""),
 		MQTTPass:          get(KeyMQTTPass, "MQTT_PASSWORD", ""),
 		MQTTPrefix:        get(KeyMQTTPrefix, "MQTT_PREFIX", "homeassistant"),
-		ReferenceEntity:   get(KeyReferenceEntity, "", ""),
+		MonitoredEntities: parseEntities(get(KeyMonitoredEntities, "", "")),
 		ThresholdW:        thr,
 		DefaultMultiplier: mult,
 		DefaultUnit:       get(KeyDefaultUnit, "", ""),
@@ -86,6 +116,9 @@ func (c Config) HAConfigured() bool { return c.HAURL != "" && c.HAToken != "" }
 
 // MQTTConfigured reports whether the MQTT publisher can connect.
 func (c Config) MQTTConfigured() bool { return c.MQTTHost != "" }
+
+// ReferenceConfigured reports whether a monitored set is configured.
+func (c Config) ReferenceConfigured() bool { return len(c.MonitoredEntities) > 0 }
 
 // DatabaseURL is infra config (not a dashboard setting).
 func DatabaseURL() string {

@@ -88,78 +88,113 @@ GROUP BY endpoint_id`, start, end)
 	return out, nil
 }
 
-// CorrelationVsReference augments the rate-ratio ranking with the Pearson
-// correlation (corr()) between each meter's per-minute delta and the plug's
-// per-minute power, computed in-DB. Ranks by r (desc, nil last) then score.
-func (d *DB) CorrelationVsReference(ctx context.Context, entity string, start, end time.Time) ([]model.CorrRow, error) {
+// regrRow holds the in-DB regression of a meter's per-minute delta vs aggregate
+// monitored power.
+type regrRow struct {
+	r, slope, intercept, r2, p10 *float64
+}
+
+// CorrelationVsReference ranks meters against the TOTAL monitored power (sum of
+// the configured set). For each meter it computes, in-DB: Pearson r and the
+// linear regression of per-minute delta vs aggregate power — which yields the
+// unit multiplier (slope), the unmonitored baseline (intercept), and a floor
+// check. Returns rows + the monitored floor (W). Floor is a soft down-rank.
+func (d *DB) CorrelationVsReference(ctx context.Context, entities []string, start, end time.Time) ([]model.CorrRow, float64, error) {
 	base, err := d.Correlation(ctx, start, end)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	floor := d.MonitoredFloor(ctx, entities, start, end)
+	if len(entities) == 0 {
+		return base, 0, nil
 	}
 
-	// Pearson r per meter, in-DB, over aligned 1-minute buckets.
-	rmap := map[int64]float64{}
-	rrows, err := d.pool.Query(ctx, `
-WITH ref AS (
-  SELECT time_bucket('1 minute', ts) AS b, avg(power_w) AS power
+	reg := map[int64]regrRow{}
+	rows, err := d.pool.Query(ctx, `
+WITH per_entity AS (
+  SELECT time_bucket_gapfill('1 minute', ts) AS b, entity_id, locf(avg(power_w)) AS w
   FROM reference_samples
-  WHERE ts BETWEEN $1 AND $2 AND ($3 = '' OR entity_id = $3)
-  GROUP BY b
-),
+  WHERE entity_id = ANY($3) AND ts >= $1 AND ts <= $2
+  GROUP BY b, entity_id),
+ref AS (SELECT b, sum(coalesce(w,0)) AS power FROM per_entity GROUP BY b),
 m AS (
   SELECT endpoint_id, time_bucket('1 minute', ts) AS b,
          max(consumption)-min(consumption) AS delta
   FROM readings
-  WHERE ts BETWEEN $1 AND $2 AND consumption IS NOT NULL AND endpoint_id IS NOT NULL
-  GROUP BY endpoint_id, b
-)
-SELECT m.endpoint_id, corr(m.delta, ref.power) AS r
+  WHERE ts >= $1 AND ts <= $2 AND consumption IS NOT NULL AND endpoint_id IS NOT NULL
+  GROUP BY endpoint_id, b)
+SELECT m.endpoint_id,
+       corr(m.delta, ref.power)            AS r,
+       regr_slope(m.delta, ref.power)      AS slope,
+       regr_intercept(m.delta, ref.power)  AS intercept,
+       regr_r2(m.delta, ref.power)         AS r2,
+       percentile_cont(0.1) WITHIN GROUP (ORDER BY m.delta) AS p10
 FROM m JOIN ref USING (b)
 GROUP BY m.endpoint_id
-HAVING count(*) >= 3`, start, end, entity)
+HAVING count(*) >= 5`, start, end, entities)
 	if err == nil {
-		for rrows.Next() {
+		for rows.Next() {
 			var id int64
-			var r *float64
-			if err := rrows.Scan(&id, &r); err == nil && r != nil {
-				rmap[id] = *r
+			var rr regrRow
+			if err := rows.Scan(&id, &rr.r, &rr.slope, &rr.intercept, &rr.r2, &rr.p10); err == nil {
+				reg[id] = rr
 			}
 		}
-		rrows.Close()
-	}
-
-	// Ground-truth plug energy over the window (Wh ≈ avg power × hours).
-	var avgPower *float64
-	_ = d.pool.QueryRow(ctx,
-		`SELECT avg(power_w) FROM reference_samples WHERE ts BETWEEN $1 AND $2 AND ($3='' OR entity_id=$3)`,
-		start, end, entity).Scan(&avgPower)
-	var energyWh *float64
-	if avgPower != nil {
-		e := round(*avgPower*end.Sub(start).Hours(), 1)
-		energyWh = &e
+		rows.Close()
 	}
 
 	for i := range base {
-		base[i].PlugEnergyWh = energyWh
-		if r, ok := rmap[base[i].EndpointID]; ok {
-			rr := round(r, 3)
-			base[i].R = &rr
+		rr, ok := reg[base[i].EndpointID]
+		if !ok {
+			continue
+		}
+		if rr.r != nil {
+			v := round(*rr.r, 3)
+			base[i].R = &v
+		}
+		if rr.r2 != nil {
+			v := round(*rr.r2, 3)
+			base[i].R2 = &v
+		}
+		// calibration only makes sense for a positive relationship
+		if rr.slope != nil && *rr.slope > 0 {
+			slope := *rr.slope
+			s := round(slope, 6)
+			base[i].Slope = &s
+			// M = Wh per meter-unit = 1/(60·slope); suggested multiplier is kWh/unit
+			mult := round(1.0/(60000.0*slope), 8)
+			base[i].SuggestedMultiplier = &mult
+			if rr.intercept != nil {
+				bw := round(*rr.intercept/slope, 1) // unmonitored baseline (W)
+				base[i].BaselineW = &bw
+			}
+			// floor check: meter's calibrated low-rate power ≥ monitored floor
+			if rr.p10 != nil && floor > 0 {
+				minW := *rr.p10 / slope // (units/min)/(units/min per W) = W
+				ok := minW >= 0.8*floor
+				base[i].FloorOK = &ok
+			}
 		}
 	}
-	sort.SliceStable(base, func(i, j int) bool {
-		ri, rj := base[i].R, base[j].R
-		switch {
-		case ri != nil && rj != nil && *ri != *rj:
-			return *ri > *rj
-		case ri != nil && rj == nil:
-			return true
-		case ri == nil && rj != nil:
-			return false
-		default:
-			return base[i].Score > base[j].Score
+
+	rankScore := func(c model.CorrRow) float64 {
+		s := -1.0
+		if c.R != nil {
+			s = *c.R
 		}
+		if c.FloorOK != nil && !*c.FloorOK {
+			s -= 0.3 // soft penalty, stays visible
+		}
+		return s
+	}
+	sort.SliceStable(base, func(i, j int) bool {
+		si, sj := rankScore(base[i]), rankScore(base[j])
+		if si != sj {
+			return si > sj
+		}
+		return base[i].Score > base[j].Score
 	})
-	return base, nil
+	return base, floor, nil
 }
 
 // AggRow is a meter's standing across multiple test windows.
@@ -177,15 +212,15 @@ type AggRow struct {
 // CombinedRanking aggregates the rate-ratio correlation across all closed
 // windows (the meter that wins every test is almost certainly yours).
 func (d *DB) CombinedRanking(ctx context.Context) (map[string]any, error) {
-	return d.aggregateWindows(ctx, false, "")
+	return d.aggregateWindows(ctx, false, nil)
 }
 
 // IdentifyAuto aggregates reference correlation across recent closed auto windows.
-func (d *DB) IdentifyAuto(ctx context.Context, entity string) (map[string]any, error) {
-	return d.aggregateWindows(ctx, true, entity)
+func (d *DB) IdentifyAuto(ctx context.Context, entities []string) (map[string]any, error) {
+	return d.aggregateWindows(ctx, true, entities)
 }
 
-func (d *DB) aggregateWindows(ctx context.Context, useRef bool, entity string) (map[string]any, error) {
+func (d *DB) aggregateWindows(ctx context.Context, useRef bool, entities []string) (map[string]any, error) {
 	src := ""
 	if useRef {
 		src = "auto"
@@ -206,7 +241,7 @@ func (d *DB) aggregateWindows(ctx context.Context, useRef bool, entity string) (
 	for _, w := range wins {
 		var ranked []model.CorrRow
 		if useRef {
-			ranked, err = d.CorrelationVsReference(ctx, entity, w.start, w.end)
+			ranked, _, err = d.CorrelationVsReference(ctx, entities, w.start, w.end)
 		} else {
 			ranked, err = d.Correlation(ctx, w.start, w.end)
 		}

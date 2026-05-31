@@ -78,6 +78,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/integrations/test", s.handleIntegrationsTest)
 	mux.HandleFunc("GET /api/integrations/status", s.handleIntegrationsStatus)
 	mux.HandleFunc("GET /api/ha/power-entities", s.handlePowerEntities)
+	mux.HandleFunc("POST /api/ha/create-helper", s.handleCreateHelper)
 
 	mux.HandleFunc("GET /api/identify", s.handleIdentify)
 	mux.HandleFunc("GET /api/identify/auto", s.handleIdentifyAuto)

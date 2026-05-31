@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -174,28 +175,45 @@ func (w *worker) onReading(ctx context.Context, id int64) {
 	w.pub.PublishState(m, energy, power, signal)
 }
 
-// haLoop maintains the HA WebSocket subscription to the reference plug and
-// builds auto test windows from its power profile. Reconnects with backoff and
-// on config change (haRestart).
+// einfo is a monitored entity's normalization metadata.
+type einfo struct {
+	kind   string  // "power" | "energy"
+	factor float64 // power: unit→W; energy: unit→kWh
+}
+
+// haLoop subscribes to ALL monitored entities, normalizes each to watts (energy
+// sensors are differentiated), and feeds the live aggregate (sum) to auto-window
+// detection + SSE. Reconnects with backoff and on config change.
 func (w *worker) haLoop(ctx context.Context) {
 	for ctx.Err() == nil {
 		w.mu.RLock()
 		cfg := w.cfg
 		w.mu.RUnlock()
 
-		if !cfg.HAConfigured() || cfg.ReferenceEntity == "" {
+		if !cfg.HAConfigured() || !cfg.ReferenceConfigured() {
 			if !waitOrRestart(ctx, 5*time.Second, w.haRestart) {
 				return
 			}
 			continue
 		}
 
-		entity := cfg.ReferenceEntity
+		entities := cfg.MonitoredEntities
 		threshold := cfg.ThresholdW
-		log.Printf("[worker] HA WS subscribing to %s (threshold %.0fW)", entity, threshold)
+		client := ha.New(cfg.HAURL, cfg.HAToken)
+		info := buildEntityInfo(ctx, client, entities)
+		log.Printf("[worker] HA WS subscribing to %d monitored entit(ies); threshold %.0fW", len(entities), threshold)
+
+		// per-subscription normalization state (callback is single-threaded)
+		lastPower := map[string]float64{}
+		type estate struct {
+			have    bool
+			lastKwh float64
+			lastTS  time.Time
+		}
+		es := map[string]*estate{}
 
 		subCtx, cancel := context.WithCancel(ctx)
-		go func() { // cancel this subscription if config changes
+		go func() {
 			select {
 			case <-subCtx.Done():
 			case <-w.haRestart:
@@ -203,10 +221,47 @@ func (w *worker) haLoop(ctx context.Context) {
 			}
 		}()
 
-		err := ha.Stream(subCtx, cfg.HAURL, cfg.HAToken, entity, func(s ha.Sample) {
-			_ = w.d.InsertReferenceSample(subCtx, entity, s.TS, s.Power)
-			w.d.NotifyReference(subCtx, s.Power)
-			w.autoWindow(subCtx, s.Power, threshold)
+		err := ha.Stream(subCtx, cfg.HAURL, cfg.HAToken, entities, func(entity string, s ha.Sample) {
+			in, ok := info[entity]
+			if !ok {
+				return
+			}
+			var powerW float64
+			switch in.kind {
+			case "power":
+				powerW = s.Power * in.factor
+			case "energy":
+				kwh := s.Power * in.factor
+				st := es[entity]
+				if st == nil {
+					st = &estate{}
+					es[entity] = st
+				}
+				if !st.have {
+					st.have, st.lastKwh, st.lastTS = true, kwh, s.TS
+					return // need two points to differentiate
+				}
+				dt := s.TS.Sub(st.lastTS).Hours()
+				prevKwh := st.lastKwh
+				st.lastKwh, st.lastTS = kwh, s.TS
+				if dt <= 0 {
+					return
+				}
+				powerW = (kwh - prevKwh) * 1000 / dt
+				if powerW < 0 {
+					powerW = 0 // utility_meter cycle reset
+				}
+			default:
+				return
+			}
+			_ = w.d.InsertReferenceSample(subCtx, entity, s.TS, powerW)
+			lastPower[entity] = powerW
+			agg := 0.0
+			for _, v := range lastPower {
+				agg += v
+			}
+			w.d.NotifyReference(subCtx, agg)
+			w.autoWindow(subCtx, agg, threshold)
 		})
 		cancel()
 		if err != nil && ctx.Err() == nil {
@@ -215,6 +270,43 @@ func (w *worker) haLoop(ctx context.Context) {
 				return
 			}
 		}
+	}
+}
+
+// buildEntityInfo resolves each monitored entity's kind + unit factor from HA.
+func buildEntityInfo(ctx context.Context, client *ha.Client, entities []string) map[string]einfo {
+	out := map[string]einfo{}
+	sensors, err := client.MonitorableSensors(ctx)
+	if err != nil {
+		log.Printf("[worker] entity info: %v", err)
+		return out
+	}
+	byID := map[string]ha.Entity{}
+	for _, s := range sensors {
+		byID[s.EntityID] = s
+	}
+	for _, e := range entities {
+		s, ok := byID[e]
+		if !ok {
+			log.Printf("[worker] monitored entity %s not found in HA states", e)
+			continue
+		}
+		out[e] = einfo{kind: s.Kind, factor: unitFactor(s.Kind, s.Unit)}
+	}
+	return out
+}
+
+// unitFactor converts a sensor's native unit to W (power) or kWh (energy).
+func unitFactor(kind, unit string) float64 {
+	switch strings.ToUpper(unit) {
+	case "KW":
+		return 1000
+	case "WH":
+		return 0.001
+	case "MWH":
+		return 1000
+	default: // W, kWh, or unknown
+		return 1
 	}
 }
 

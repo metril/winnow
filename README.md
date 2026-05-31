@@ -11,12 +11,21 @@ consumption (Itron ERT), decoded with a cheap RTL-SDR via `rtl_tcp` + `rtlamr`.
 
 ## How it identifies your meter
 
-Plug a known load (space heater, kettle) into a smart plug that Home Assistant
-monitors. The plug tells winnow *exactly* when the load is on and how many watts
-it draws. winnow correlates every meter's per-minute consumption against the
-plug's power profile (Pearson `corr()`, computed in TimescaleDB) — the meter
-whose usage tracks the plug is yours. It runs **continuously** (auto-opening a
-window whenever the plug turns on) and **on demand** ("analyze last N hours").
+winnow uses the **sum of your Home-Assistant-monitored devices** as ground truth.
+Your whole-home meter must, at every instant, draw at least that sum — and its
+floor is your baseline draw. winnow correlates **and regresses** every meter's
+per-minute consumption against the total monitored power (Pearson `corr()` +
+`regr_*`, in TimescaleDB):
+
+- the meter that tracks the aggregate with high `r` is yours;
+- the regression **calibrates its units** (slope → kWh per meter-unit, suggested
+  for the published sensor) and **estimates your unmonitored baseline** (intercept);
+- a meter that can't cover your **minimum monitored power** is down-ranked.
+
+You point winnow at one pre-aggregated HA sensor (a **Utility Meter**/energy
+sensor, or a **Group "sum"** of device power), or select several devices —
+winnow can even create the HA Group-sum helper for you. A deliberate load test
+still works (a spike in the aggregate) but isn't required.
 
 ## Architecture
 
@@ -78,7 +87,11 @@ Open **Settings → Integrations** and enter:
   tokens). Used to read the plug's power history (REST) and live state (WebSocket).
 - **MQTT broker**: your HA broker's host/port/user/pass (the same broker HA
   listens to, so Discovery entities appear). Hit **Test connections**.
-- **Reference plug**: pick the smart-plug power sensor; set the on/off threshold.
+- **Monitored consumption**: load your HA sensors and either pick one
+  pre-aggregated sensor (Utility Meter / energy, or a Group "sum" of power), or
+  check several devices and **Use selected** (winnow sums) or **Create HA sum
+  helper** (winnow makes the Group-sum in HA). The **floor** (your minimum draw)
+  is shown once samples flow.
 
 Config is stored in the database (secrets masked) — no `.env` editing needed.
 

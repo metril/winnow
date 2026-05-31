@@ -30,12 +30,14 @@ export interface CorrRow {
   msg_type: string;
   endpoint_type: number | null;
   r: number | null;
+  r2: number | null;
   score: number;
   window_delta: number;
-  window_rate: number;
-  baseline_rate: number;
   window_packets: number;
-  plug_energy_wh: number | null;
+  slope: number | null;
+  baseline_w: number | null;
+  suggested_multiplier: number | null;
+  floor_ok: boolean | null;
 }
 
 export interface TestWindow {
@@ -55,10 +57,11 @@ export interface Health {
 }
 
 export interface Status {
-  ha_ok: boolean; mqtt_ok: boolean; reference_entity: string; published: Meter[];
+  ha_ok: boolean; mqtt_ok: boolean;
+  monitored_entities: string[]; monitored_floor_w: number; published: Meter[];
 }
 
-export interface PowerEntity { entity_id: string; name: string; state: string; unit: string; }
+export interface PowerEntity { entity_id: string; name: string; state: string; unit: string; kind: string; }
 
 async function j<T>(url: string, opts?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
@@ -83,6 +86,8 @@ export const api = {
   testIntegrations: (body: Record<string, string>) =>
     j<any>("/api/integrations/test", { method: "POST", body: JSON.stringify(body) }),
   powerEntities: () => j<PowerEntity[]>("/api/ha/power-entities"),
+  createHelper: (name: string, entities: string[]) =>
+    j<any>("/api/ha/create-helper", { method: "POST", body: JSON.stringify({ name, entities }) }),
 
   identify: (hours: number) => j<any>(`/api/identify?hours=${hours}`),
   identifyAuto: () => j<any>("/api/identify/auto"),

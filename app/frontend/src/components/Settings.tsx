@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { api, PowerEntity } from "../api";
+import { api, PowerEntity, Status } from "../api";
+import { fmt } from "../util";
 
-// Settings: all HA + MQTT + identification config lives here (stored in the DB).
+// Settings: HA + MQTT connection, and the "monitored consumption" set that winnow
+// uses as ground truth (a single HA aggregate sensor, or several winnow sums).
 export default function Settings() {
   const [s, setS] = useState<Record<string, any>>({});
-  const [entities, setEntities] = useState<PowerEntity[]>([]);
   const [test, setTest] = useState<any>(null);
   const [saved, setSaved] = useState(false);
 
@@ -16,10 +17,9 @@ export default function Settings() {
   const secretPlaceholder = (k: string) => (s[k + "_set"] ? "•••••• (set — leave blank to keep)" : "");
 
   const save = async () => {
-    // only send non-empty values; secrets left blank are preserved server-side
     const body: Record<string, string> = {};
     ["ha_url", "ha_token", "mqtt_host", "mqtt_port", "mqtt_user", "mqtt_pass", "mqtt_prefix",
-     "reference_entity", "threshold_w", "default_multiplier", "default_unit"].forEach((k) => {
+     "threshold_w", "default_multiplier", "default_unit"].forEach((k) => {
       if (s[k] !== undefined && s[k] !== "") body[k] = String(s[k]);
     });
     await api.putSettings(body);
@@ -33,10 +33,6 @@ export default function Settings() {
       if (s[k]) body[k] = String(s[k]);
     });
     setTest(await api.testIntegrations(body));
-  };
-
-  const loadEntities = async () => {
-    try { setEntities(await api.powerEntities()); } catch (e) { alert(String(e)); }
   };
 
   return (
@@ -67,21 +63,12 @@ export default function Settings() {
         </div>
       </div>
 
+      <MonitoredConsumption />
+
       <div className="panel">
-        <h2>Identification</h2>
+        <h2>Tuning</h2>
         <div className="form">
-          <label>Reference plug</label>
-          <div className="controls" style={{ margin: 0 }}>
-            <input type="text" value={field("reference_entity")} onChange={(e) => set("reference_entity", e.target.value)} placeholder="sensor.heater_plug_power" style={{ flex: 1 }} />
-            <button className="btn alt" onClick={loadEntities}>List power sensors</button>
-          </div>
-          {entities.length > 0 && (
-            <select value={field("reference_entity")} onChange={(e) => set("reference_entity", e.target.value)}>
-              <option value="">— pick —</option>
-              {entities.map((e) => <option key={e.entity_id} value={e.entity_id}>{e.name} ({e.entity_id}) {e.state}{e.unit}</option>)}
-            </select>
-          )}
-          <label>On/off threshold (W)</label>
+          <label>Load-on threshold (W)</label>
           <input type="text" value={field("threshold_w")} onChange={(e) => set("threshold_w", e.target.value)} placeholder="50" />
           <label>Default multiplier</label>
           <input type="text" value={field("default_multiplier")} onChange={(e) => set("default_multiplier", e.target.value)} placeholder="1" />
@@ -100,6 +87,91 @@ export default function Settings() {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// MonitoredConsumption: the set of HA sensors whose summed power is the ground
+// truth. Pick one pre-aggregated sensor, or several that winnow sums / that
+// winnow turns into a HA Group(sum) helper.
+function MonitoredConsumption() {
+  const [entities, setEntities] = useState<PowerEntity[]>([]);
+  const [status, setStatus] = useState<Status | null>(null);
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const loadStatus = async () => {
+    const st = await api.status();
+    setStatus(st);
+    setSel(new Set(st.monitored_entities || []));
+  };
+  useEffect(() => { loadStatus(); }, []);
+
+  const loadEntities = async () => {
+    try { setEntities(await api.powerEntities()); }
+    catch (e) { setMsg(String(e)); }
+  };
+
+  const toggle = (id: string) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const useSelected = async () => {
+    await api.putSettings({ monitored_entities: JSON.stringify([...sel]) });
+    setMsg(`winnow will sum ${sel.size} sensor(s).`); loadStatus();
+  };
+  const createHelper = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api.createHelper("winnow monitored power", [...sel]);
+      if (r.ok) { setMsg(`Created ${r.entity_id} in HA and selected it.`); loadStatus(); }
+      else setMsg(`Couldn't auto-create the helper (${r.error}). Create a Group/Min-Max "sum" helper in HA → Settings → Devices & Services → Helpers, then pick it here.`);
+    } catch (e) { setMsg(String(e)); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="panel">
+      <h2>Monitored consumption (ground truth)</h2>
+      <p className="muted">
+        winnow identifies your meter by how well it tracks the <strong>sum of your
+        power-monitored devices</strong> — and your meter can never draw below that
+        sum's floor. Point it at one pre-aggregated HA sensor (a Utility Meter /
+        energy sensor, or a Group "sum" of device power), or select several below.
+      </p>
+      <div className="controls">
+        <button className="btn alt" onClick={loadEntities}>Load HA sensors</button>
+        {status && (
+          <>
+            <span className="badge">{status.monitored_entities?.length || 0} selected</span>
+            <span className="badge">floor ≈ {fmt(status.monitored_floor_w)} W</span>
+          </>
+        )}
+        {sel.size > 0 && <span className="muted">{sel.size} checked</span>}
+      </div>
+
+      {entities.length > 0 && (
+        <>
+          <div className="controls">
+            <button className="btn alt" onClick={() => setSel(new Set(entities.map((e) => e.entity_id)))}>select all</button>
+            <button className="btn alt" onClick={() => setSel(new Set())}>clear</button>
+          </div>
+          <div className="panel" style={{ background: "#1e2530", maxHeight: 260, overflowY: "auto" }}>
+            {entities.map((e) => (
+              <label key={e.entity_id} style={{ display: "block", padding: "2px 0" }}>
+                <input type="checkbox" checked={sel.has(e.entity_id)} onChange={() => toggle(e.entity_id)} />{" "}
+                {e.name} <span className="muted">{e.entity_id}</span>{" "}
+                <span className={"chip " + (e.kind === "energy" ? "" : "electric")}>{e.kind}</span>{" "}
+                <span className="muted">{e.state}{e.unit}</span>
+              </label>
+            ))}
+          </div>
+          <div className="controls">
+            <button className="btn" disabled={!sel.size} onClick={useSelected}>Use selected (winnow sums)</button>
+            <button className="btn gold" disabled={!sel.size || busy} onClick={createHelper}>{busy ? "Creating…" : "Create HA sum helper & use"}</button>
+          </div>
+        </>
+      )}
+      {msg && <div className={msg.startsWith("Couldn't") ? "error" : "muted"}>{msg}</div>}
     </div>
   );
 }

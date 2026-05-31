@@ -41,8 +41,12 @@ func add(t *testing.T, d *DB, id int64, minute float64, consumption float64, ety
 }
 
 func addRef(t *testing.T, d *DB, minute, power float64) {
+	addRefEntity(t, d, "sensor.plug", minute, power)
+}
+
+func addRefEntity(t *testing.T, d *DB, entity string, minute, power float64) {
 	ts := base.Add(time.Duration(minute * float64(time.Minute)))
-	if err := d.InsertReferenceSample(context.Background(), "sensor.plug", ts, power); err != nil {
+	if err := d.InsertReferenceSample(context.Background(), entity, ts, power); err != nil {
 		t.Fatalf("ref: %v", err)
 	}
 }
@@ -80,27 +84,66 @@ func sumTracked(uptoMinute int) float64 {
 	return s
 }
 
-func TestCorrelationVsReference_RanksTrackingMeter(t *testing.T) {
+func TestCorrelationVsReference_RanksAndCalibrates(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
 	start, end := seed(t, d)
+	entities := []string{"sensor.plug"}
 
-	ranking, err := d.CorrelationVsReference(context.Background(), "sensor.plug", start, end)
+	ranking, floor, err := d.CorrelationVsReference(context.Background(), entities, start, end)
 	if err != nil {
 		t.Fatalf("corr: %v", err)
 	}
 	if len(ranking) == 0 {
 		t.Fatal("no ranking")
 	}
-	if ranking[0].EndpointID != 1001 {
-		t.Fatalf("expected 1001 first, got %d (ranking=%+v)", ranking[0].EndpointID, ranking)
+	top := ranking[0]
+	if top.EndpointID != 1001 {
+		t.Fatalf("expected 1001 first, got %d (ranking=%+v)", top.EndpointID, ranking)
 	}
-	if ranking[0].R == nil || *ranking[0].R < 0.95 {
-		t.Fatalf("expected r>=0.95 for tracking meter, got %v", ranking[0].R)
+	if top.R == nil || *top.R < 0.95 {
+		t.Fatalf("expected r>=0.95 for tracking meter, got %v", top.R)
 	}
-	// plug energy sanity: avg power (200W) over 1h ≈ 200 Wh
-	if ranking[0].PlugEnergyWh == nil || *ranking[0].PlugEnergyWh < 150 || *ranking[0].PlugEnergyWh > 260 {
-		t.Fatalf("plug energy out of range: %v", ranking[0].PlugEnergyWh)
+	// meter delta = 0.1 * aggregate power  =>  regr_slope ≈ 0.1
+	if top.Slope == nil || *top.Slope < 0.08 || *top.Slope > 0.12 {
+		t.Fatalf("slope should recover ~0.1, got %v", top.Slope)
+	}
+	if top.SuggestedMultiplier == nil || *top.SuggestedMultiplier <= 0 {
+		t.Fatalf("expected a positive suggested multiplier, got %v", top.SuggestedMultiplier)
+	}
+	// alternating 100/300 W -> 5th percentile floor ≈ 100
+	if floor < 90 || floor > 130 {
+		t.Fatalf("monitored floor out of range: %v", floor)
+	}
+}
+
+func TestMonitoredFloorAndAggregateSum(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	ctx := context.Background()
+	// two monitored entities; one drops out for a stretch (locf must carry it).
+	for m := 0; m < 30; m++ {
+		addRefEntity(t, d, "sensor.a", float64(m)+0.2, 200)
+		if m < 15 { // sensor.b stops reporting after minute 15 -> locf holds 50
+			addRefEntity(t, d, "sensor.b", float64(m)+0.3, 50)
+		}
+	}
+	start, end := base, base.Add(30*time.Minute)
+	series, err := d.AggregateSeries(ctx, []string{"sensor.a", "sensor.b"}, start, end, "5m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(series) == 0 {
+		t.Fatal("empty aggregate series")
+	}
+	// after b drops out, aggregate stays 250 (200 + locf 50), never back to 200
+	last := series[len(series)-1].Value
+	if last < 240 || last > 260 {
+		t.Fatalf("locf sum wrong at end: %v (want ~250)", last)
+	}
+	floor := d.MonitoredFloor(ctx, []string{"sensor.a", "sensor.b"}, start, end)
+	if floor < 240 || floor > 260 {
+		t.Fatalf("floor should be ~250 (both on, locf), got %v", floor)
 	}
 }
 
