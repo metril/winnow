@@ -1,7 +1,0 @@
-# Plain uvicorn (not [standard]) so the image builds on 32-bit ARM too:
-# the [standard] extras (uvloop, httptools) ship no armv7 wheels and would need
-# a compiler. They are perf-only; uvicorn runs fine without them, and the
-# dashboard polls rather than using websockets.
-fastapi==0.115.6
-uvicorn==0.34.0
-psycopg2-binary==2.9.10

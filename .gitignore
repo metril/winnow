@@ -1,12 +1,21 @@
-# python
+# go build artifacts (binaries named after cmd/ dirs land at repo root)
+/api
+/worker
+*.test
+
+# python (legacy / dev venv)
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # node / frontend build
 node_modules/
 dist/
 *.tsbuildinfo
+# keep the embedded-SPA placeholder so `go build ./cmd/api` works locally
+!cmd/api/dist/
+!cmd/api/dist/index.html
 
 # local data & env
 *.db

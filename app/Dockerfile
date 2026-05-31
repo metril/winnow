@@ -1,25 +1,21 @@
-# --- build the React SPA -----------------------------------------------------
-FROM node:20-bookworm-slim AS frontend
+# winnow api: builds the React SPA, embeds it into the Go API binary.
+FROM node:20-bookworm-slim AS fe
 WORKDIR /fe
 COPY app/frontend/package.json app/frontend/package-lock.json* ./
 RUN npm install
 COPY app/frontend/ ./
 RUN npm run build
 
-# --- python runtime ----------------------------------------------------------
-FROM python:3.12-slim
-WORKDIR /app
+FROM golang:1.22-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# Replace the placeholder SPA with the real built bundle, then embed it.
+COPY --from=fe /fe/dist ./cmd/api/dist
+RUN CGO_ENABLED=0 go build -o /out/api ./cmd/api
 
-COPY app/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Shared data layer + API; built SPA from the frontend stage.
-COPY meterfinder /app/meterfinder
-COPY app/meterfinder_api /app/meterfinder_api
-COPY --from=frontend /fe/dist /app/static
-
-ENV STATIC_DIR=/app/static \
-    PYTHONUNBUFFERED=1
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /out/api /api
 EXPOSE 8000
-
-CMD ["uvicorn", "meterfinder_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/api"]

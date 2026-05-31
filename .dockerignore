@@ -1,9 +1,12 @@
-**/node_modules
-**/dist
+.git
 .venv
+**/node_modules
+app/frontend/dist
 **/__pycache__
+*.tsbuildinfo
 *.db
 *.db-wal
 *.db-shm
-.git
 .env
+/api
+/worker
