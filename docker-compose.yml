@@ -1,0 +1,44 @@
+# meterfinder — capture + app sharing a SQLite volume.
+# Build context is the repo root for both (they share the meterfinder/ package).
+services:
+  capture:
+    build:
+      context: .
+      dockerfile: capture/Dockerfile
+    restart: unless-stopped
+    environment:
+      DB_PATH: /data/meters.db
+      CAPTURE_MOCK: ${CAPTURE_MOCK:-0}
+      RTL_DEVICES: ${RTL_DEVICES:-0}
+      RTLAMR_MSGTYPE: ${RTLAMR_MSGTYPE:-scm,scm+,idm}
+      RTLAMR_FILTERID: ${RTLAMR_FILTERID:-}
+      FREQ: ${FREQ:-912600155}
+      GAIN: ${GAIN:-}
+      PPM: ${PPM:-0}
+    volumes:
+      - meterdb:/data
+    # --- USB passthrough for the RTL-SDR dongle(s) ---------------------------
+    # Pass the whole USB bus + a cgroup rule so any plugged dongle is visible.
+    # If your host is fussy, comment these out and uncomment `privileged: true`.
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    device_cgroup_rules:
+      - "c 189:* rmw"   # 189 = USB serial bus
+    # privileged: true
+
+  app:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    restart: unless-stopped
+    environment:
+      DB_PATH: /data/meters.db
+    volumes:
+      - meterdb:/data
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    depends_on:
+      - capture
+
+volumes:
+  meterdb:

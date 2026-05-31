@@ -1,0 +1,15 @@
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# node / frontend build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# local data & env
+*.db
+*.db-wal
+*.db-shm
+.env
