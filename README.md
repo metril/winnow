@@ -60,7 +60,16 @@ meters, one with a built-in spike).
    sudo modprobe -r dvb_usb_rtl28xxu rtl2832 rtl2830 2>/dev/null || true   # or reboot
    ```
 2. **USB passthrough** is already wired in `docker-compose.yml` (`/dev/bus/usb` +
-   a cgroup rule). For multiple dongles, set `RTL_DEVICES=0,1,2`.
+   a cgroup rule).
+
+**SDR auto-detection:** `RTL_DEVICES=auto` (the default) detects and uses *every*
+connected RTL-SDR dongle at startup, tagging each by its **serial** — so USB
+index ordering never matters and swapping/adding dongles needs no config (just
+restart the capture container). Only RTL2832U-based dongles work (rtlamr
+constraint); other SDRs (Airspy/HackRF/SDRplay/…) are not supported. If several
+dongles share the generic serial `00000001`, give them unique ones once with
+`rtl_eeprom -d <i> -s <name>` for stable identity across reboots. To pin a
+specific set instead, set `RTL_DEVICES=0,1` (a comma list of indices).
 
 ## Configure Home Assistant (in the dashboard)
 

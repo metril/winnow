@@ -119,6 +119,9 @@ func (d *DB) LoadConfig(ctx context.Context) (config.Config, error) {
 
 func (d *DB) Health(ctx context.Context, staleAfter time.Duration) (model.Health, error) {
 	h := model.Health{Sources: []model.SourceHealth{}}
+	// Self-clean: drop heartbeats for sources that vanished long ago (e.g. a
+	// dongle removed, or a renamed source after switching to serial tagging).
+	_, _ = d.pool.Exec(ctx, `DELETE FROM capture_heartbeat WHERE updated_at < now() - interval '1 hour'`)
 	rows, err := d.pool.Query(ctx, `SELECT source, last_ts, total_count, updated_at FROM capture_heartbeat ORDER BY source`)
 	if err != nil {
 		return h, err

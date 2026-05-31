@@ -22,7 +22,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgres://winnow:winnow@db:5432/winnow}
       CAPTURE_MOCK: ${CAPTURE_MOCK:-0}
-      RTL_DEVICES: ${RTL_DEVICES:-0}
+      RTL_DEVICES: ${RTL_DEVICES:-auto}
       RTLAMR_MSGTYPE: ${RTLAMR_MSGTYPE:-scm,scm+,idm}
       RTLAMR_FILTERID: ${RTLAMR_FILTERID:-}
       FREQ: ${FREQ:-912600155}

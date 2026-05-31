@@ -42,10 +42,9 @@ func main() {
 			go func(s string) { defer wg.Done(); superviseMock(ctx, database, s) }(src)
 		}
 	} else {
-		devices := splitCSV(env("RTL_DEVICES", "0"))
-		for i, dev := range devices {
+		for i, dev := range resolveDevices(ctx) {
 			wg.Add(1)
-			go func(dev string, port int) { defer wg.Done(); superviseSDR(ctx, database, dev, port) }(dev, 1234+i)
+			go func(dev sdrDevice, port int) { defer wg.Done(); superviseSDR(ctx, database, dev, port) }(dev, 1234+i)
 		}
 	}
 	wg.Wait()
@@ -65,24 +64,27 @@ func mustDB(ctx context.Context) *db.DB {
 }
 
 // superviseSDR runs rtl_tcp + rtlamr for one device, restarting on failure.
-func superviseSDR(ctx context.Context, d *db.DB, dev string, port int) {
+// rtl_tcp is addressed by the device's current index; readings are tagged with
+// its stable source id (serial when unique).
+func superviseSDR(ctx context.Context, d *db.DB, dev sdrDevice, port int) {
 	freq := env("FREQ", "912600155")
 	msgtype := env("RTLAMR_MSGTYPE", "scm,scm+,idm")
 	filterID := env("RTLAMR_FILTERID", "")
 	gain := env("GAIN", "")
 	ppm := env("PPM", "0")
 	server := "127.0.0.1:" + itoa(port)
+	devIdx := itoa(dev.index)
 
 	for ctx.Err() == nil {
-		log.Printf("[capture] dev=%s starting rtl_tcp on %s", dev, server)
-		tcpArgs := []string{"-d", dev, "-a", "127.0.0.1", "-p", itoa(port), "-P", ppm}
+		log.Printf("[capture] source=%s (dev %s) starting rtl_tcp on %s", dev.source, devIdx, server)
+		tcpArgs := []string{"-d", devIdx, "-a", "127.0.0.1", "-p", itoa(port), "-P", ppm}
 		if gain != "" {
 			tcpArgs = append(tcpArgs, "-g", gain)
 		}
 		tcp := exec.CommandContext(ctx, "rtl_tcp", tcpArgs...)
-		tcp.Stderr = prefixWriter("rtl_tcp:" + dev)
+		tcp.Stderr = prefixWriter("rtl_tcp:" + dev.source)
 		if err := tcp.Start(); err != nil {
-			log.Printf("[capture] dev=%s rtl_tcp start: %v", dev, err)
+			log.Printf("[capture] source=%s rtl_tcp start: %v", dev.source, err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -93,20 +95,20 @@ func superviseSDR(ctx context.Context, d *db.DB, dev string, port int) {
 			amrArgs = append(amrArgs, "-filterid="+filterID)
 		}
 		amr := exec.CommandContext(ctx, "rtlamr", amrArgs...)
-		amr.Stderr = prefixWriter("rtlamr:" + dev)
+		amr.Stderr = prefixWriter("rtlamr:" + dev.source)
 		stdout, _ := amr.StdoutPipe()
 		if err := amr.Start(); err != nil {
-			log.Printf("[capture] dev=%s rtlamr start: %v", dev, err)
+			log.Printf("[capture] source=%s rtlamr start: %v", dev.source, err)
 			_ = tcp.Process.Kill()
 			time.Sleep(5 * time.Second)
 			continue
 		}
-		ingest(ctx, d, dev, stdout)
+		ingest(ctx, d, dev.source, stdout)
 
 		_ = amr.Wait()
 		_ = tcp.Process.Kill()
 		_ = tcp.Wait()
-		log.Printf("[capture] dev=%s pipeline exited; restarting in 5s", dev)
+		log.Printf("[capture] source=%s pipeline exited; restarting in 5s", dev.source)
 		select {
 		case <-ctx.Done():
 		case <-time.After(5 * time.Second):
@@ -131,7 +133,10 @@ func ingest(ctx context.Context, d *db.DB, source string, stdout io.Reader) {
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	var n int64
-	var lastTS time.Time
+	lastTS := time.Now().UTC()
+	// Seed a heartbeat so the source shows up immediately (a near-silent dongle
+	// then correctly goes stale rather than staying invisible until 25 packets).
+	_ = d.UpdateHeartbeat(ctx, source, lastTS, n)
 	for sc.Scan() {
 		if ctx.Err() != nil {
 			return
