@@ -7,7 +7,6 @@
 # sources, so the full stack works on a host with no hardware.
 set -u
 
-DB_PATH="${DB_PATH:-/data/meters.db}"
 RTLAMR_MSGTYPE="${RTLAMR_MSGTYPE:-scm,scm+,idm}"
 RTLAMR_FILTERID="${RTLAMR_FILTERID:-}"
 FREQ="${FREQ:-912600155}"
@@ -16,7 +15,20 @@ PPM="${PPM:-0}"
 RTL_DEVICES="${RTL_DEVICES:-0}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-ingest() { python3 "$HERE/ingest.py" --db "$DB_PATH" --source "$1"; }
+ingest() { python3 "$HERE/ingest.py" --source "$1"; }
+
+# Wait for PostgreSQL to be ready, then create the schema once up front so the
+# N per-device ingesters don't each race to initialize it.
+echo "[run] waiting for PostgreSQL and initializing schema" >&2
+for attempt in $(seq 1 30); do
+  if PYTHONPATH="$HERE/.." python3 -c \
+       "from meterfinder import db; db.init_schema(db.connect())" 2>/dev/null; then
+    echo "[run] schema ready" >&2
+    break
+  fi
+  echo "[run] postgres not ready yet (attempt $attempt); retrying in 2s" >&2
+  sleep 2
+done
 
 # Supervise one real SDR: device id $1 on tcp port $2.
 supervise_sdr() {

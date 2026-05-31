@@ -1,13 +1,28 @@
-# meterfinder — capture + app sharing a SQLite volume.
-# Build context is the repo root for both (they share the meterfinder/ package).
+# meterfinder — db (PostgreSQL) + capture + app.
+# Build context is the repo root for capture/app (they share the meterfinder/ pkg).
 services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-meterfinder}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meterfinder}
+      POSTGRES_DB: ${POSTGRES_DB:-meterfinder}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meterfinder} -d ${POSTGRES_DB:-meterfinder}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   capture:
     build:
       context: .
       dockerfile: capture/Dockerfile
     restart: unless-stopped
     environment:
-      DB_PATH: /data/meters.db
+      DATABASE_URL: ${DATABASE_URL:-postgresql://meterfinder:meterfinder@db:5432/meterfinder}
       CAPTURE_MOCK: ${CAPTURE_MOCK:-0}
       RTL_DEVICES: ${RTL_DEVICES:-0}
       RTLAMR_MSGTYPE: ${RTLAMR_MSGTYPE:-scm,scm+,idm}
@@ -15,8 +30,9 @@ services:
       FREQ: ${FREQ:-912600155}
       GAIN: ${GAIN:-}
       PPM: ${PPM:-0}
-    volumes:
-      - meterdb:/data
+    depends_on:
+      db:
+        condition: service_healthy
     # --- USB passthrough for the RTL-SDR dongle(s) ---------------------------
     # Pass the whole USB bus + a cgroup rule so any plugged dongle is visible.
     # If your host is fussy, comment these out and uncomment `privileged: true`.
@@ -32,13 +48,12 @@ services:
       dockerfile: app/Dockerfile
     restart: unless-stopped
     environment:
-      DB_PATH: /data/meters.db
-    volumes:
-      - meterdb:/data
+      DATABASE_URL: ${DATABASE_URL:-postgresql://meterfinder:meterfinder@db:5432/meterfinder}
     ports:
       - "${APP_PORT:-8000}:8000"
     depends_on:
-      - capture
+      db:
+        condition: service_healthy
 
 volumes:
-  meterdb:
+  pgdata:

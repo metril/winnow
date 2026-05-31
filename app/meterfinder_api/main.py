@@ -1,8 +1,9 @@
 """FastAPI app: JSON API over the shared data layer + serves the built SPA.
 
-A fresh SQLite connection is opened per request (sqlite connections are not
-shareable across threads, and FastAPI runs sync endpoints in a threadpool).
-Connections are read-mostly; the capture container is the only writer.
+Connections come from a PostgreSQL pool. Each borrowed connection is put in
+autocommit mode so the constantly-polling dashboard always sees the latest
+committed rows (no stale transaction snapshot) and never blocks the capture
+writers — Postgres MVCC handles the concurrency.
 """
 
 import csv
@@ -17,7 +18,6 @@ from meterfinder import db
 
 from .schemas import MeterUpdate, TestCreate, TestStart
 
-DB_PATH = os.environ.get("DB_PATH", "meters.db")
 STATIC_DIR = os.environ.get("STATIC_DIR", "/app/static")
 
 # rtlamr -msgtype tokens, derived from the stored outer Type string.
@@ -26,13 +26,25 @@ _MSGTYPE_MAP = {"SCM": "scm", "SCM+": "scm+", "IDM": "idm", "NetIDM": "netidm"}
 app = FastAPI(title="meterfinder", version="1.0")
 
 
+@app.on_event("startup")
+def _startup() -> None:
+    # Create the pool and initialize the schema once at startup.
+    pool = db.get_pool()
+    con = pool.getconn()
+    try:
+        db.init_schema(con)
+    finally:
+        pool.putconn(con)
+
+
 def get_db():
-    con = db.connect(DB_PATH)
-    db.init_schema(con)
+    pool = db.get_pool()
+    con = pool.getconn()
+    con.autocommit = True
     try:
         yield con
     finally:
-        con.close()
+        pool.putconn(con)
 
 
 # --- health ------------------------------------------------------------------
@@ -87,16 +99,12 @@ def update_meter(endpoint_id: int, body: MeterUpdate, con=Depends(get_db)):
 
 @app.get("/api/meters/{endpoint_id}/filter-command")
 def filter_command(endpoint_id: int, con=Depends(get_db)):
-    row = con.execute(
-        "SELECT msg_type FROM readings WHERE endpoint_id = ? "
-        "AND msg_type IS NOT NULL ORDER BY ts DESC LIMIT 1",
-        (endpoint_id,),
-    ).fetchone()
-    if not row:
+    msg_type = db.latest_msg_type(con, endpoint_id)
+    if not msg_type:
         raise HTTPException(404, "meter not seen")
-    token = _MSGTYPE_MAP.get(row["msg_type"], "scm")
+    token = _MSGTYPE_MAP.get(msg_type, "scm")
     cmd = f"rtlamr -filterid={endpoint_id} -msgtype={token} -format=json"
-    return {"endpoint_id": endpoint_id, "msg_type": row["msg_type"], "command": cmd}
+    return {"endpoint_id": endpoint_id, "msg_type": msg_type, "command": cmd}
 
 
 @app.get("/api/meters/{endpoint_id}/export.csv")

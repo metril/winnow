@@ -21,14 +21,24 @@ BASE = datetime(2026, 5, 30, 0, 0, 0, tzinfo=timezone.utc)
 
 @pytest.fixture
 def con():
-    c = db.connect(":memory:")
+    # Tests run against a real PostgreSQL (set TEST_DATABASE_URL); the
+    # correlation math lives in SQL, so we exercise the actual engine.
+    dsn = os.environ.get("TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("TEST_DATABASE_URL not set (run a postgres:16 and point at it)")
+    c = db.connect(dsn)
     db.init_schema(c)
-    return c
+    with c.cursor() as cur:  # isolate each test
+        cur.execute("TRUNCATE readings, meters, test_windows, capture_heartbeat "
+                    "RESTART IDENTITY")
+    c.commit()
+    yield c
+    c.close()
 
 
 def add(con, endpoint_id, minute, consumption, *, msg_type="SCM",
         endpoint_type=4, source="0"):
-    ts = (BASE + timedelta(minutes=minute)).isoformat()
+    ts = BASE + timedelta(minutes=minute)  # aware datetime; psycopg2 adapts
     rec = {
         "ts": ts,
         "msg_type": msg_type,
@@ -36,7 +46,8 @@ def add(con, endpoint_id, minute, consumption, *, msg_type="SCM",
         "endpoint_type": endpoint_type,
         "consumption": consumption,
     }
-    db.insert_reading(con, rec, raw=json.dumps(rec), source=source)
+    db.insert_reading(con, rec, raw=json.dumps({**rec, "ts": ts.isoformat()}),
+                      source=source)
     con.commit()
 
 
@@ -73,7 +84,8 @@ def test_extract_uses_priority_fields():
     assert rec["consumption"] == 42
     assert rec["endpoint_type"] == 4
     assert rec["msg_type"] == "SCM+"
-    assert rec["ts"].endswith("+00:00")
+    assert isinstance(rec["ts"], datetime) and rec["ts"].tzinfo is not None
+    assert rec["ts"] == datetime(2026, 5, 30, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def test_extract_idm_fallbacks():
@@ -85,9 +97,9 @@ def test_extract_idm_fallbacks():
 
 
 def test_normalize_ts_handles_z_and_offset():
-    assert db.normalize_ts("2026-05-30T12:00:00Z") == "2026-05-30T12:00:00+00:00"
+    assert db.normalize_ts("2026-05-30T12:00:00Z").isoformat() == "2026-05-30T12:00:00+00:00"
     # a +02:00 local time converts to UTC
-    assert db.normalize_ts("2026-05-30T14:00:00+02:00") == "2026-05-30T12:00:00+00:00"
+    assert db.normalize_ts("2026-05-30T14:00:00+02:00").isoformat() == "2026-05-30T12:00:00+00:00"
     assert db.normalize_ts(None) is None
     assert db.normalize_ts("garbage") is None
 

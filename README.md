@@ -14,10 +14,18 @@ broadcast unencrypted consumption (Itron ERT), decoded with a cheap RTL-SDR via
 ```
 ┌─────────── capture container ───────────┐   ┌──── app container ────┐
 │ rtl_tcp ─► rtlamr ─► ingest.py ─┐        │   │ FastAPI  +  React SPA │
-│  (one pair per dongle)          ▼        │   │   ▲                   │
-│                          /data/meters.db ◄───────┘  (shared volume)  │
-└──────────────────────────────────────────┘   └───────────────────────┘
+│  (one pair per dongle)          ▼        │   │   ▼                   │
+└─────────────────────────────────┼────────┘   └───┼───────────────────┘
+                                   ▼                ▼
+                          ┌────────────────────────────┐
+                          │  PostgreSQL (db container)   │
+                          └────────────────────────────┘
 ```
+
+The database is **PostgreSQL**: with multiple SDR ingesters writing concurrently
+and a dashboard polling constantly, MVCC means writers never block each other and
+reads never block writers. (The data layer in `meterfinder/db.py` is the single
+place that talks to it.)
 
 ## TL;DR
 
@@ -156,23 +164,29 @@ magnitude and timing matter, so it works identically across electric/gas/water.
 
 ## Data & export
 
-SQLite lives on the `meterdb` Docker volume at `/data/meters.db` (full raw JSON
-of every packet is kept in the `raw` column, so nothing is lost if a field name
-differs on your meter). Per-meter history exports as CSV from the meter detail
-view. The data layer (`meterfinder/db.py`) is isolated so it can later be swapped
-to Postgres/TimescaleDB without touching the capture or API code.
+Data lives in **PostgreSQL** on the `pgdata` Docker volume (full raw JSON of every
+packet is kept in the `raw` column, so nothing is lost if a field name differs on
+your meter). Per-meter history exports as CSV from the meter detail view.
+Connection is via `DATABASE_URL` (see `.env`); the data layer
+(`meterfinder/db.py`) is the only module that touches the DB.
 
 ## Development
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install pytest fastapi 'uvicorn[standard]'
-.venv/bin/python -m pytest tests/          # consumption + correlation math
+python3 -m venv .venv
+.venv/bin/pip install pytest fastapi uvicorn psycopg2-binary
+
+# Tests run against a real Postgres (the correlation math lives in SQL):
+docker run -d --name mf-pg -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test \
+  -e POSTGRES_DB=test -p 55432:5432 postgres:16
+TEST_DATABASE_URL=postgresql://test:test@localhost:55432/test \
+  .venv/bin/python -m pytest tests/
 
 # backend (serves API; build the SPA first or run vite dev separately).
 # PYTHONPATH=. so the repo-root meterfinder/ package is importable alongside
 # meterfinder_api/ (in the container both live under /app, so it's automatic).
-PYTHONPATH=. DB_PATH=meters.db .venv/bin/uvicorn meterfinder_api.main:app \
-  --reload --app-dir app
+PYTHONPATH=. DATABASE_URL=postgresql://test:test@localhost:55432/test \
+  .venv/bin/uvicorn meterfinder_api.main:app --reload --app-dir app
 
 # frontend dev server (proxies /api to :8000)
 cd app/frontend && npm install && npm run dev

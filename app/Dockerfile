@@ -18,10 +18,8 @@ COPY meterfinder /app/meterfinder
 COPY app/meterfinder_api /app/meterfinder_api
 COPY --from=frontend /fe/dist /app/static
 
-ENV DB_PATH=/data/meters.db \
-    STATIC_DIR=/app/static \
+ENV STATIC_DIR=/app/static \
     PYTHONUNBUFFERED=1
 EXPOSE 8000
-VOLUME ["/data"]
 
 CMD ["uvicorn", "meterfinder_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
