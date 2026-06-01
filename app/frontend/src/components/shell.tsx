@@ -1,20 +1,22 @@
 import { ReactNode, useState } from "react";
 import {
   LayoutDashboard, Crosshair, Zap, Gauge, RadioTower, Settings as SettingsIcon,
-  ChevronLeft, ChevronRight, Radio,
+  ChevronLeft, ChevronRight, Radio, Database,
 } from "lucide-react";
 import { api } from "../api";
 import { useLive, perMin } from "../live";
 import { useFetch } from "../fetch";
+import { ThemeToggle } from "../theme";
 import { cx, Dot } from "../ui";
 import { fmt } from "../util";
 
-export type View = "overview" | "identify" | "meters" | "loadtests" | "devices" | "settings";
+export type View = "overview" | "identify" | "meters" | "loadtests" | "devices" | "maintenance" | "settings";
 
 const GROUPS: { label: string | null; items: { id: View; label: string; icon: any }[] }[] = [
   { label: null, items: [{ id: "overview", label: "Overview", icon: LayoutDashboard }] },
   { label: "Find my meter", items: [{ id: "identify", label: "Identify", icon: Crosshair }, { id: "loadtests", label: "Load tests", icon: Zap }] },
   { label: "Inventory", items: [{ id: "meters", label: "Meters", icon: Gauge }, { id: "devices", label: "Devices", icon: RadioTower }] },
+  { label: "System", items: [{ id: "maintenance", label: "Maintenance", icon: Database }] },
 ];
 
 export function AppShell({ view, onNav, children }: { view: View; onNav: (v: View) => void; children: ReactNode }) {
@@ -47,6 +49,7 @@ function Sidebar({ view, onNav, collapsed, onToggle }:
 
       <div className="border-t border-border px-2.5 py-2">
         <NavItem item={{ label: "Settings", icon: SettingsIcon }} active={view === "settings"} onClick={() => onNav("settings")} collapsed={collapsed} />
+        {!collapsed && <div className="px-1 pt-1.5"><ThemeToggle className="w-full justify-center" /></div>}
       </div>
 
       {!collapsed && <StatusRail />}

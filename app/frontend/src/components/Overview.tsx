@@ -8,8 +8,10 @@ import { fmt } from "../util";
 import { Page, View } from "./shell";
 import { Card, CardHeader, CardBody, StatCard, Badge, Dot, Button, EmptyState, Skeleton } from "../ui";
 import { Sparkline } from "./charts";
+import { useChartTheme } from "./chartTheme";
 
 export default function Overview({ onNav }: { onNav: (v: View) => void }) {
+  const chart = useChartTheme();
   const { power, powerHistory, readings, configVersion } = useLive();
   const ov = useFetch(api.overview, [configVersion]);
   const health = useFetch(api.health, [configVersion]);
@@ -45,7 +47,7 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
       {/* Row 2 — KPIs */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard label="Monitored now" tone="gold" icon={<Activity size={15} />} value={power != null ? fmt(power) : "–"} unit="W"
-          spark={spark.length > 1 ? <Sparkline data={spark} color="#fbbf24" height={32} /> : undefined} />
+          spark={spark.length > 1 ? <Sparkline data={spark} color={chart.gold} height={32} /> : undefined} />
         <StatCard label="Published" tone="brand" icon={<Radio size={15} />} value={pubs.length} unit="meters" />
         <StatCard label="Today" icon={<Gauge size={15} />} value={fmt(todayKwh, 1)} unit="kWh" />
         <StatCard label="Cost today" tone="good" icon={<DollarSign size={15} />}

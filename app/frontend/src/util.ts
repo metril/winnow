@@ -19,3 +19,24 @@ export const isoToLocal = (iso: string): string => {
 
 export const since = (hours: number): string =>
   new Date(Date.now() - hours * 3600_000).toISOString();
+
+// human-readable byte size
+export const bytes = (n: number | null | undefined): string => {
+  if (n === null || n === undefined) return "–";
+  if (n < 1024) return `${n} B`;
+  const u = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024, i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${u[i]}`;
+};
+
+// compact span between two ISO timestamps, e.g. "12d 4h"
+export const spanOf = (a: string | null, b: string | null): string => {
+  if (!a || !b) return "–";
+  const ms = new Date(b).getTime() - new Date(a).getTime();
+  if (!(ms > 0)) return "–";
+  const d = Math.floor(ms / 86400000), h = Math.floor((ms % 86400000) / 3600000);
+  if (d > 0) return `${d}d ${h}h`;
+  const m = Math.floor((ms % 3600000) / 60000);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+};

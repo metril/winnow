@@ -301,8 +301,11 @@ type Anomaly struct {
 	Detail     string `json:"detail"`
 }
 
-// Anomalies scans for tracked-meter dropouts/stalls and dead sources.
-func (d *DB) Anomalies(ctx context.Context) ([]Anomaly, error) {
+// Anomalies scans for tracked-meter dropouts/stalls and dead sources. liveSources
+// is the set of capture sources that are currently expected to be producing data
+// (a dongle that is plugged in AND enabled); a source_down anomaly is only raised
+// for one of those — so a removed or disabled dongle can't trigger a phantom alert.
+func (d *DB) Anomalies(ctx context.Context, liveSources []string) ([]Anomaly, error) {
 	out := []Anomaly{}
 	// tracked meters that haven't been heard recently (dropout)
 	rows, err := d.pool.Query(ctx, `
@@ -346,16 +349,20 @@ WHERE (m.is_mine OR m.publish) AND prior.mv > 0 AND COALESCE(recent.mv, 0) = 0`)
 		}
 		srows.Close()
 	}
-	// dead capture sources
+	// dead capture sources — only flag dongles we actually expect to be running
+	// (present + enabled). A departed/disabled dongle whose heartbeat row lingers
+	// is not an anomaly. The 10-minute window keeps a marginal dongle that hears
+	// meters only sporadically from flapping the alert; a genuine outage still trips.
 	hrows, err := d.pool.Query(ctx, `
 SELECT source, updated_at FROM capture_heartbeat
-WHERE updated_at < now() - interval '2 minutes'`)
+WHERE updated_at < now() - interval '10 minutes'
+  AND source = ANY($1)`, liveSources)
 	if err == nil {
 		for hrows.Next() {
 			var src string
 			var up *time.Time
 			if err := hrows.Scan(&src, &up); err == nil {
-				out = append(out, Anomaly{Kind: "source_down", Source: src, Detail: "no heartbeat in 2+ min"})
+				out = append(out, Anomaly{Kind: "source_down", Source: src, Detail: "no data in 10+ min"})
 			}
 		}
 		hrows.Close()

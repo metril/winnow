@@ -78,6 +78,11 @@ func (s *server) routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/overview", s.handleOverview)
 	mux.HandleFunc("GET /api/anomalies", s.handleAnomalies)
+
+	mux.HandleFunc("GET /api/admin/stats", s.handleAdminStats)
+	mux.HandleFunc("POST /api/admin/maintenance", s.handleMaintenance)
+	mux.HandleFunc("POST /api/admin/delete", s.handleAdminDelete)
+
 	mux.HandleFunc("GET /api/diagnostics/coverage", s.handleCoverage)
 	mux.HandleFunc("GET /api/diagnostics/sources", s.handleSourceTimeline)
 

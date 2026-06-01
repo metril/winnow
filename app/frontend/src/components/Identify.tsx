@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Crosshair, Star, Radio, AlertTriangle, Settings, Trophy } from "lucide-react";
+import { Crosshair, Star, Radio, AlertTriangle, Settings, Trophy, Check, X } from "lucide-react";
 import { api, CorrRow } from "../api";
 import { useLive } from "../live";
 import { useFetch } from "../fetch";
@@ -82,7 +82,7 @@ export default function Identify() {
                   <Td><ConfidenceBar r={r.r} /></Td>
                   <Td num>{r.suggested_multiplier ? <Button size="sm" onClick={() => apply(r)} success="Calibration applied">×{r.suggested_multiplier.toPrecision(3)}</Button> : <span className="text-tertiary">–</span>}</Td>
                   <Td num className="text-secondary">{r.baseline_w != null ? `${fmt(r.baseline_w)} W` : "–"}</Td>
-                  <Td>{r.floor_ok == null ? <span className="text-tertiary">–</span> : r.floor_ok ? <span className="text-good">✓</span> : <span className="text-bad">✗</span>}</Td>
+                  <Td>{r.floor_ok == null ? <span className="text-tertiary">–</span> : r.floor_ok ? <Check size={14} className="text-good" /> : <X size={14} className="text-bad" />}</Td>
                   <Td num className="text-secondary">{r.window_packets}</Td>
                   <Td><RowActions id={r.endpoint_id} onChange={reload} /></Td>
                 </tr>

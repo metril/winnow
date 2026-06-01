@@ -1,10 +1,77 @@
-@import "@fontsource-variable/inter";
+@import "@fontsource-variable/hanken-grotesk";
+@import "@fontsource-variable/jetbrains-mono";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ---- design tokens: RGB channels so rgb(var(--x) / a) opacity works ------ */
 @layer base {
-  :root { color-scheme: dark; }
+  :root {
+    /* LIGHT (default): off-white canvas, white raised cards, layered shadows */
+    --app: 250 250 250;          /* zinc-50  */
+    --sidebar: 255 255 255;      /* white    */
+    --surface: 255 255 255;      /* white card */
+    --raised: 244 244 245;       /* zinc-100 chips / table head / inputs */
+    --overlay: 255 255 255;      /* popovers / dialogs */
+    --border: 228 228 231;       /* zinc-200 */
+    --border-strong: 212 212 216;/* zinc-300 */
+    --text: 24 24 27;            /* zinc-900 */
+    --secondary: 82 82 91;       /* zinc-600 */
+    --tertiary: 113 113 122;     /* zinc-500 */
+    --faint: 161 161 170;        /* zinc-400 */
+    --brand: 13 148 136;         /* teal-600 holds contrast on light */
+    --on-brand: 255 255 255;
+    --gold: 217 119 6;           /* amber-600 */
+    --on-gold: 69 26 3;          /* amber-950 (dark text on amber) */
+    --good: 22 163 74;           /* green-600 */
+    --warn: 217 119 6;
+    --bad: 220 38 38;            /* red-600 */
+    --info: 37 99 235;           /* blue-600 */
+    --chart-1: 13 148 136;
+    --chart-2: 217 119 6;
+    --chart-3: 79 70 229;
+    --chart-4: 225 29 72;
+    --chart-5: 8 145 178;
+    --chart-6: 124 58 237;
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.06);
+    --shadow-raised: 0 1px 3px rgb(0 0 0 / 0.08), 0 1px 2px rgb(0 0 0 / 0.04);
+    --shadow-overlay: 0 16px 40px rgb(0 0 0 / 0.18), 0 2px 8px rgb(0 0 0 / 0.10);
+    color-scheme: light;
+  }
+
+  html.dark {
+    /* DARK (refined): never pure black, elevation by lightness, brighter accents */
+    --app: 10 10 11;             /* #0a0a0b */
+    --sidebar: 17 17 19;
+    --surface: 24 24 27;         /* zinc-900 */
+    --raised: 39 39 42;          /* zinc-800 */
+    --overlay: 63 63 70;         /* zinc-700 (popovers/dialogs) */
+    --border: 39 39 42;          /* zinc-800 (subtle) */
+    --border-strong: 63 63 70;   /* zinc-700 */
+    --text: 244 244 245;         /* zinc-100 (~87%) */
+    --secondary: 161 161 170;    /* zinc-400 (~60%) */
+    --tertiary: 113 113 122;     /* zinc-500 */
+    --faint: 82 82 91;           /* zinc-600 */
+    --brand: 45 212 191;         /* teal-400 */
+    --on-brand: 4 47 46;         /* teal-950 (dark text on teal-400) */
+    --gold: 251 191 36;          /* amber-400 */
+    --on-gold: 69 26 3;
+    --good: 74 222 128;          /* green-400 */
+    --warn: 251 191 36;
+    --bad: 248 113 113;          /* red-400 */
+    --info: 96 165 250;          /* blue-400 */
+    --chart-1: 45 212 191;
+    --chart-2: 251 191 36;
+    --chart-3: 129 140 248;
+    --chart-4: 251 113 133;
+    --chart-5: 34 211 238;
+    --chart-6: 167 139 250;
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow-raised: 0 1px 3px rgb(0 0 0 / 0.4);
+    --shadow-overlay: 0 18px 44px rgb(0 0 0 / 0.6), 0 2px 8px rgb(0 0 0 / 0.45);
+    color-scheme: dark;
+  }
+
   html, body, #root { height: 100%; }
   body { @apply bg-app text-text font-sans antialiased text-body; }
   h1 { @apply text-h1; }
@@ -18,11 +85,11 @@
 
 @layer components {
   .mono { @apply font-mono; }
-  .id-pill { @apply inline-flex items-center rounded-md bg-overlay px-1.5 py-0.5 font-mono text-micro text-secondary; }
+  .id-pill { @apply inline-flex items-center rounded bg-raised px-1.5 py-0.5 font-mono text-micro text-secondary; }
   .input {
-    @apply w-full rounded-lg border border-border bg-app/70 px-3 py-2 text-body text-text
+    @apply w-full rounded-md border border-border bg-app px-3 py-2 text-body text-text
            placeholder:text-faint outline-none transition
-           focus:border-brand/70 focus:ring-2 focus:ring-brand/15;
+           focus:border-brand focus:ring-2 focus:ring-brand/20;
   }
   .label { @apply text-micro font-medium uppercase tracking-wide text-tertiary; }
 }

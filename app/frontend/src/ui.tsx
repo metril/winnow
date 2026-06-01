@@ -5,7 +5,7 @@ import {
   ButtonHTMLAttributes, InputHTMLAttributes, SelectHTMLAttributes, TextareaHTMLAttributes,
 } from "react";
 import clsx from "clsx";
-import { Check, X, Info, Loader2 } from "lucide-react";
+import { Check, X, Info, Loader2, ArrowUp, ArrowDown, Minus } from "lucide-react";
 
 export const cx = clsx;
 function errMsg(e: any) { return String(e?.message ?? e ?? "error").replace(/^Error:\s*/, ""); }
@@ -60,11 +60,11 @@ interface BtnProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onClic
   onClick?: (e: React.MouseEvent) => void | Promise<any>;
 }
 const variants: Record<Variant, string> = {
-  primary: "bg-brand text-app hover:bg-brand/90 border-transparent font-semibold",
-  default: "bg-raised text-text hover:bg-overlay border-border",
+  primary: "bg-brand text-on-brand hover:bg-brand/90 border-transparent font-semibold",
+  default: "bg-surface text-text hover:bg-raised border-border",
   ghost: "bg-transparent text-secondary hover:text-text hover:bg-raised border-transparent",
-  gold: "bg-gold text-app hover:bg-gold/90 border-transparent font-semibold",
-  danger: "bg-bad/12 text-bad hover:bg-bad/20 border-bad/25",
+  gold: "bg-gold text-on-gold hover:bg-gold/90 border-transparent font-semibold",
+  danger: "bg-bad/12 text-bad hover:bg-bad/20 border-bad/30",
 };
 export function Button({ variant = "default", size = "md", success, icon, onClick, children, className, disabled, ...rest }: BtnProps) {
   const toast = useToast();
@@ -81,7 +81,7 @@ export function Button({ variant = "default", size = "md", success, icon, onClic
   };
   return (
     <button onClick={handle} disabled={disabled || busy}
-      className={cx("inline-flex items-center justify-center gap-1.5 rounded-lg border transition select-none whitespace-nowrap",
+      className={cx("inline-flex items-center justify-center gap-1.5 rounded-md border transition select-none whitespace-nowrap",
         size === "sm" ? "px-2.5 py-1 text-micro" : "px-3.5 py-1.5 text-small",
         variants[variant], (disabled || busy) && "opacity-50 cursor-not-allowed", className)} {...rest}>
       {busy ? <Spinner /> : icon}{children}
@@ -106,7 +106,7 @@ export function Card({ children, className, variant = "default", onClick }:
   { children: ReactNode; className?: string; variant?: CardVariant; onClick?: () => void }) {
   return (
     <div onClick={onClick}
-      className={cx("rounded-xl border bg-surface shadow-raised transition-[transform,background,border]", cardVariants[variant], className)}>
+      className={cx("rounded-lg border bg-surface shadow-card transition-[transform,background,border]", cardVariants[variant], className)}>
       {children}
     </div>
   );
@@ -152,7 +152,7 @@ export function StatCard({ label, value, unit, icon, delta, tone = "default", sp
   const valTone = tone === "brand" ? "text-brand" : tone === "gold" ? "text-gold" : tone === "good" ? "text-good" : "text-text";
   const iconTone = tone === "brand" ? "bg-brand/12 text-brand" : tone === "gold" ? "bg-gold/12 text-gold" : tone === "good" ? "bg-good/12 text-good" : "bg-raised text-secondary";
   return (
-    <div className="rounded-xl border border-border bg-surface p-4 shadow-card">
+    <div className="rounded-lg border border-border bg-surface p-4 shadow-card">
       <div className="flex items-center justify-between">
         <span className="label">{label}</span>
         {icon && <span className={cx("grid h-7 w-7 place-items-center rounded-lg", iconTone)}>{icon}</span>}
@@ -163,8 +163,8 @@ export function StatCard({ label, value, unit, icon, delta, tone = "default", sp
       </div>
       <div className="mt-1 flex items-center justify-between">
         {delta ? (
-          <span className={cx("text-micro tabular-nums", delta.dir === "up" ? "text-good" : delta.dir === "down" ? "text-bad" : "text-tertiary")}>
-            {delta.dir === "up" ? "▲" : delta.dir === "down" ? "▼" : "·"} {delta.text}
+          <span className={cx("inline-flex items-center gap-1 text-micro tabular-nums", delta.dir === "up" ? "text-good" : delta.dir === "down" ? "text-bad" : "text-tertiary")}>
+            {delta.dir === "up" ? <ArrowUp size={12} /> : delta.dir === "down" ? <ArrowDown size={12} /> : <Minus size={12} />} {delta.text}
           </span>
         ) : <span />}
       </div>
@@ -207,8 +207,8 @@ export function Field({ label, children, hint }: { label: string; children: Reac
 export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
   return (
     <button type="button" onClick={() => onChange(!checked)} className="inline-flex items-center gap-2 text-small">
-      <span className={cx("relative h-5 w-9 rounded-full transition", checked ? "bg-brand" : "bg-raised border border-border")}>
-        <span className={cx("absolute top-0.5 h-4 w-4 rounded-full bg-app transition", checked ? "left-[18px]" : "left-0.5")} />
+      <span className={cx("relative h-5 w-9 rounded-full transition", checked ? "bg-brand" : "bg-raised border border-border-strong")}>
+        <span className={cx("absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition", checked ? "left-[18px]" : "left-0.5")} />
       </span>
       {label && <span className="text-secondary">{label}</span>}
     </button>
@@ -252,7 +252,7 @@ export function Dialog({ open, onClose, title, children, footer }:
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-      <div className="relative z-10 w-[min(92vw,480px)] animate-fade-in rounded-2xl border border-border-strong bg-overlay shadow-overlay" onClick={(e) => e.stopPropagation()}>
+      <div className="relative z-10 w-[min(92vw,480px)] animate-fade-in rounded-xl border border-border-strong bg-overlay text-text shadow-overlay" onClick={(e) => e.stopPropagation()}>
         <div className="border-b border-border px-5 py-3.5 text-h3">{title}</div>
         <div className="px-5 py-4 text-small text-secondary">{children}</div>
         {footer && <div className="flex justify-end gap-2 border-t border-border px-5 py-3.5">{footer}</div>}

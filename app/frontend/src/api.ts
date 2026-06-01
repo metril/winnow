@@ -84,6 +84,19 @@ export interface Benchmark {
   endpoint_id: number; commodity: string; days: number;
   yours: number; median: number; percentile: number; peers: number;
 }
+export interface TableStat { name: string; bytes: number; rows: number; }
+export interface SourceStat { source: string; rows: number; bytes: number; oldest?: string; newest?: string; }
+export interface DBStats {
+  total_bytes: number; tables: TableStat[]; reading_rows: number;
+  oldest_reading: string | null; newest_reading: string | null;
+  chunks: number; compressed_chunks: number;
+  uncompressed_bytes: number; compressed_bytes: number;
+  retention_policy?: string; compression_policy?: string;
+  sources: SourceStat[];
+}
+export type MaintOp = "vacuum" | "reindex" | "refresh_agg" | "compress" | "prune_devices";
+export type DeleteMode = "age" | "source" | "all_tests" | "all_readings";
+
 export interface CoverageCell { source: string; endpoint_id: number; packets: number; last_seen: string; }
 export interface ProfilePoint { key: number; value: number; }
 export interface HeatCell { dow: number; hour: number; value: number; }
@@ -126,6 +139,13 @@ export const api = {
 
   overview: () => j<Overview>("/api/overview"),
   anomalies: () => j<Anomaly[]>("/api/anomalies"),
+
+  adminStats: () => j<DBStats>("/api/admin/stats"),
+  maintenance: (op: MaintOp) =>
+    j<any>("/api/admin/maintenance", { method: "POST", body: JSON.stringify({ op }) }),
+  adminDelete: (body: { mode: DeleteMode; days?: number; source?: string; confirm: string }) =>
+    j<{ ok: boolean; mode: string; removed: number }>("/api/admin/delete", { method: "POST", body: JSON.stringify(body) }),
+
   coverage: () => j<CoverageCell[]>("/api/diagnostics/coverage"),
   sourceTimeline: (qs = "") => j<Record<string, { bucket: string; packets: number }[]>>(`/api/diagnostics/sources${qs}`),
 

@@ -4,7 +4,7 @@ import { Star, Radio, EyeOff, Eye, Terminal, Download } from "lucide-react";
 import { api, HeatCell, DailyPoint, Benchmark } from "../api";
 import { fmt, shortTs, tsMs, since } from "../util";
 import { Heatmap } from "./charts";
-import { axisX, axisY, gridProps, tooltipStyle, CHART } from "./chartTheme";
+import { useChartTheme } from "./chartTheme";
 import { Button, Input, Field, Badge, Tabs, Segmented, Spinner, useToast } from "../ui";
 
 type DTab = "timeline" | "heatmap" | "daily";
@@ -12,6 +12,7 @@ const tickFmt = (t: number) => shortTs(new Date(t).toISOString()).slice(5, 16);
 
 export default function MeterDetail({ id, hours, onChange }: { id: number; hours: number; onChange?: () => void }) {
   const toast = useToast();
+  const ch = useChartTheme();
   const [tab, setTab] = useState<DTab>("timeline");
   const [bucket, setBucket] = useState("1h");
   const [data, setData] = useState<any>(null);
@@ -44,12 +45,12 @@ export default function MeterDetail({ id, hours, onChange }: { id: number; hours
             <div className="label mb-1">Cumulative consumption</div>
             <ResponsiveContainer width="100%" height={170}>
               <AreaChart data={points}>
-                <defs><linearGradient id="md-cum" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={CHART.brand} stopOpacity={0.22} /><stop offset="100%" stopColor={CHART.brand} stopOpacity={0} /></linearGradient></defs>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} scale="time" tickFormatter={tickFmt} {...axisX} />
-                <YAxis domain={["auto", "auto"]} tickFormatter={(v) => fmt(v)} {...axisY} />
-                <Tooltip labelFormatter={(t) => shortTs(new Date(t as number).toISOString())} formatter={(v: any) => fmt(v)} contentStyle={tooltipStyle} />
-                <Area dataKey="c" stroke={CHART.brand} strokeWidth={2} fill="url(#md-cum)" dot={false} isAnimationActive={false} />
+                <defs><linearGradient id="md-cum" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={ch.brand} stopOpacity={0.22} /><stop offset="100%" stopColor={ch.brand} stopOpacity={0} /></linearGradient></defs>
+                <CartesianGrid {...ch.gridProps} />
+                <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} scale="time" tickFormatter={tickFmt} {...ch.axisX} />
+                <YAxis domain={["auto", "auto"]} tickFormatter={(v) => fmt(v)} {...ch.axisY} />
+                <Tooltip labelFormatter={(t) => shortTs(new Date(t as number).toISOString())} formatter={(v: any) => fmt(v)} contentStyle={ch.tooltipStyle} />
+                <Area dataKey="c" stroke={ch.brand} strokeWidth={2} fill="url(#md-cum)" dot={false} isAnimationActive={false} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -57,11 +58,11 @@ export default function MeterDetail({ id, hours, onChange }: { id: number; hours
             <div className="label mb-1">Per-bucket usage ({bucket})</div>
             <ResponsiveContainer width="100%" height={150}>
               <BarChart data={deltas}>
-                <CartesianGrid {...gridProps} />
-                <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} scale="time" tickFormatter={tickFmt} {...axisX} />
-                <YAxis tickFormatter={(v) => fmt(v)} {...axisY} />
-                <Tooltip labelFormatter={(t) => shortTs(new Date(t as number).toISOString())} formatter={(v: any) => fmt(v)} contentStyle={tooltipStyle} />
-                <Bar dataKey="delta" fill={CHART.gold} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+                <CartesianGrid {...ch.gridProps} />
+                <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} scale="time" tickFormatter={tickFmt} {...ch.axisX} />
+                <YAxis tickFormatter={(v) => fmt(v)} {...ch.axisY} />
+                <Tooltip labelFormatter={(t) => shortTs(new Date(t as number).toISOString())} formatter={(v: any) => fmt(v)} contentStyle={ch.tooltipStyle} />
+                <Bar dataKey="delta" fill={ch.gold} radius={[2, 2, 0, 0]} isAnimationActive={false} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -95,6 +96,7 @@ function HeatmapTab({ id }: { id: number }) {
 }
 
 function DailyTab({ id }: { id: number }) {
+  const ch = useChartTheme();
   const [daily, setDaily] = useState<DailyPoint[] | null>(null);
   const [bench, setBench] = useState<Benchmark | null>(null);
   useEffect(() => { api.profile(id, "daily", 30).then(setDaily); api.benchmark(id, 7).then(setBench); }, [id]);
@@ -110,11 +112,11 @@ function DailyTab({ id }: { id: number }) {
       <div className="label mb-1">Daily consumption (30 days)</div>
       <ResponsiveContainer width="100%" height={180}>
         <BarChart data={(daily || []).map((d) => ({ t: d.day, v: d.value }))}>
-          <CartesianGrid {...gridProps} />
-          <XAxis dataKey="t" tickFormatter={(d) => String(d).slice(5)} {...axisX} />
-          <YAxis tickFormatter={(v) => fmt(v)} {...axisY} />
-          <Tooltip formatter={(v: any) => fmt(v)} contentStyle={tooltipStyle} />
-          <Bar dataKey="v" fill={CHART.brand} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+          <CartesianGrid {...ch.gridProps} />
+          <XAxis dataKey="t" tickFormatter={(d) => String(d).slice(5)} {...ch.axisX} />
+          <YAxis tickFormatter={(v) => fmt(v)} {...ch.axisY} />
+          <Tooltip formatter={(v: any) => fmt(v)} contentStyle={ch.tooltipStyle} />
+          <Bar dataKey="v" fill={ch.brand} radius={[2, 2, 0, 0]} isAnimationActive={false} />
         </BarChart>
       </ResponsiveContainer>
     </div>

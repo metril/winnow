@@ -108,7 +108,12 @@ func (d *DB) PruneDevices(ctx context.Context, keep []string) error {
 	if len(keep) == 0 {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, `DELETE FROM sdr_devices WHERE serial <> ALL($1)`, keep)
+	if _, err := d.pool.Exec(ctx, `DELETE FROM sdr_devices WHERE serial <> ALL($1)`, keep); err != nil {
+		return err
+	}
+	// Drop heartbeats for departed dongles too, so a removed source can't linger
+	// as a phantom "source down" anomaly until the 1h heartbeat sweep.
+	_, err := d.pool.Exec(ctx, `DELETE FROM capture_heartbeat WHERE source <> ALL($1)`, keep)
 	return err
 }
 

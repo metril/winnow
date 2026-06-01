@@ -594,8 +594,26 @@ func (s *server) handleSourceTimeline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
+// liveSources is the set of capture sources we currently expect to be producing
+// data: a dongle that is both plugged in (present in sdr_devices) and enabled in
+// config. Used to suppress phantom source_down alerts for departed/disabled dongles.
+func (s *server) liveSources(r *http.Request) []string {
+	cfg, _ := s.d.LoadConfig(r.Context())
+	devs, err := s.d.ListDevices(r.Context(), 60*time.Second)
+	if err != nil {
+		return nil
+	}
+	out := []string{}
+	for _, d := range devs {
+		if cfg.Capture.DeviceEnabled(d.Serial) {
+			out = append(out, d.Serial)
+		}
+	}
+	return out
+}
+
 func (s *server) handleAnomalies(w http.ResponseWriter, r *http.Request) {
-	a, err := s.d.Anomalies(r.Context())
+	a, err := s.d.Anomalies(r.Context(), s.liveSources(r))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -638,13 +656,90 @@ func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 		rowsOut = append(rowsOut, row)
 	}
-	anomalies, _ := s.d.Anomalies(r.Context())
+	anomalies, _ := s.d.Anomalies(r.Context(), s.liveSources(r))
 	writeJSON(w, map[string]any{
 		"currency":     cfg.Currency,
 		"cost_per_kwh": cfg.CostPerKwh,
 		"published":    rowsOut,
 		"anomalies":    anomalies,
 	})
+}
+
+// --- admin / maintenance ----------------------------------------------------
+
+func (s *server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
+	st, err := s.d.DBStats(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, st)
+}
+
+func (s *server) handleMaintenance(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Op string `json:"op"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		badReq(w, "bad json")
+		return
+	}
+	var err error
+	if body.Op == "prune_devices" {
+		err = s.d.PruneDevices(r.Context(), s.liveSources(r))
+	} else {
+		err = s.d.RunMaintenance(r.Context(), body.Op)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	_ = s.d.NotifyConfig(r.Context())
+	writeJSON(w, map[string]any{"ok": true, "op": body.Op})
+}
+
+// handleAdminDelete performs guarded data deletion. Scoped deletes require
+// confirm=="DELETE"; the catastrophic purge-all requires confirm=="PURGE-ALL".
+func (s *server) handleAdminDelete(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Mode    string `json:"mode"`
+		Days    int    `json:"days"`
+		Source  string `json:"source"`
+		Confirm string `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		badReq(w, "bad json")
+		return
+	}
+	need := "DELETE"
+	if body.Mode == "all_readings" {
+		need = "PURGE-ALL"
+	}
+	if body.Confirm != need {
+		badReq(w, "confirmation required")
+		return
+	}
+	var removed int64
+	var err error
+	switch body.Mode {
+	case "age":
+		removed, err = s.d.DeleteReadingsOlderThan(r.Context(), body.Days)
+	case "source":
+		removed, err = s.d.DeleteReadingsBySource(r.Context(), body.Source)
+	case "all_tests":
+		removed, err = s.d.PurgeTests(r.Context())
+	case "all_readings":
+		err = s.d.PurgeAllReadings(r.Context())
+	default:
+		badReq(w, "unknown mode")
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	_ = s.d.NotifyConfig(r.Context())
+	writeJSON(w, map[string]any{"ok": true, "mode": body.Mode, "removed": removed})
 }
 
 // --- test windows -----------------------------------------------------------
