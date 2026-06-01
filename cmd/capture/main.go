@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"winnow/internal/config"
@@ -58,24 +59,35 @@ type scanParams struct {
 }
 
 type runningDev struct {
-	cancel context.CancelFunc
-	params scanParams
-	done   chan struct{}
+	cancel     context.CancelFunc
+	params     scanParams
+	done       chan struct{}
+	up         *atomic.Bool // true while its rtl_tcp+rtlamr pipeline is ingesting
+	downStreak int          // consecutive ticks observed not-up (health check)
 }
 
 type manager struct {
-	d         *db.DB
-	running   map[string]*runningDev
-	inventory []sdrDevice // enumerated once, while devices are free
+	d          *db.DB
+	running    map[string]*runningDev
+	inventory  []sdrDevice // enumerated while devices are free; refreshed on rescan
+	lastRescan time.Time
 }
 
-// run enumerates dongles once (rtl_test needs exclusive access, so we can't
-// re-run it while receivers hold the devices), then reconciles on startup, on
-// config NOTIFYs, and on a periodic tick — all against the cached inventory.
+// openLock serializes rtl_tcp device opens. librtlsdr enumerates the whole USB
+// bus on open, so several receivers opening at once race and fail ("connection
+// refused" as rtl_tcp dies before binding) — especially with a marginal dongle
+// on a shared hub. Holding this during each open+bind window makes the good
+// dongles come up cleanly regardless of a bad neighbour.
+var openLock sync.Mutex
+
+// run reconciles on startup, on config NOTIFYs, and on a periodic tick. The tick
+// also runs a health check: if a dongle's pipeline stays down (e.g. it dropped
+// off the bus, or the index map went stale after another dongle vanished), it
+// triggers a coordinated rescan — stop everything, re-enumerate while the
+// devices are free, and restart against the corrected inventory.
 func (m *manager) run(ctx context.Context) {
 	notify := m.listenConfig(ctx)
-	m.inventory = m.enumerateOnce(ctx)
-	m.reconcile(ctx)
+	m.reconcile(ctx, false)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -84,12 +96,33 @@ func (m *manager) run(ctx context.Context) {
 			m.stopAll()
 			return
 		case <-ticker.C:
-			m.reconcile(ctx)
+			m.reconcile(ctx, true)
 		case <-notify:
 			log.Printf("[capture] config changed; reconciling devices")
-			m.reconcile(ctx)
+			m.reconcile(ctx, false)
 		}
 	}
+}
+
+// rescanNeeded reports whether any running dongle has been down for two
+// consecutive ticks (~60s) — a stuck pipeline that re-enumeration may fix. A
+// healthy-but-quiet dongle stays "up" (blocked reading), so it never trips this.
+func (m *manager) rescanNeeded() bool {
+	if len(m.running) == 0 {
+		return false
+	}
+	bad := false
+	for _, rd := range m.running {
+		if rd.up.Load() {
+			rd.downStreak = 0
+			continue
+		}
+		rd.downStreak++
+		if rd.downStreak >= 2 {
+			bad = true
+		}
+	}
+	return bad
 }
 
 // enumerateOnce probes for dongles (retrying until some appear) and records the
@@ -114,7 +147,18 @@ func (m *manager) enumerateOnce(ctx context.Context) []sdrDevice {
 
 // reconcile starts/stops/restarts supervisors so the running set matches the
 // enabled+configured desired set derived from the cached inventory + DB config.
-func (m *manager) reconcile(ctx context.Context) {
+// When mayRescan is set (periodic tick), an unhealthy dongle triggers a
+// coordinated re-enumeration first.
+func (m *manager) reconcile(ctx context.Context, mayRescan bool) {
+	if mayRescan && m.rescanNeeded() && time.Since(m.lastRescan) > 5*time.Minute {
+		log.Printf("[capture] a dongle is unhealthy; rescanning the bus")
+		m.stopAll()
+		m.inventory = nil
+		m.lastRescan = time.Now()
+	}
+	if len(m.inventory) == 0 {
+		m.inventory = m.enumerateOnce(ctx)
+	}
 	cfg, err := m.d.LoadConfig(ctx)
 	if err != nil {
 		log.Printf("[capture] load config: %v", err)
@@ -150,11 +194,12 @@ func (m *manager) reconcile(ctx context.Context) {
 		}
 		dctx, dcancel := context.WithCancel(ctx)
 		done := make(chan struct{})
-		m.running[src] = &runningDev{cancel: dcancel, params: want, done: done}
-		go func(src string, p scanParams) {
+		up := &atomic.Bool{}
+		m.running[src] = &runningDev{cancel: dcancel, params: want, done: done, up: up}
+		go func(src string, p scanParams, up *atomic.Bool) {
 			defer close(done)
-			superviseSDR(dctx, m.d, src, p)
-		}(src, want)
+			superviseSDR(dctx, m.d, src, p, up)
+		}(src, want, up)
 	}
 }
 
@@ -212,7 +257,8 @@ func mustDB(ctx context.Context) *db.DB {
 // superviseSDR runs rtl_tcp + rtlamr for one device with the given scan params,
 // restarting on failure until ctx is cancelled. rtl_tcp is addressed by the
 // device's current index; readings are tagged with its stable source id.
-func superviseSDR(ctx context.Context, d *db.DB, source string, p scanParams) {
+func superviseSDR(ctx context.Context, d *db.DB, source string, p scanParams, up *atomic.Bool) {
+	defer up.Store(false)
 	port := 1234 + p.devIndex
 	server := "127.0.0.1:" + itoa(port)
 	devIdx := itoa(p.devIndex)
@@ -230,21 +276,25 @@ func superviseSDR(ctx context.Context, d *db.DB, source string, p scanParams) {
 	}
 
 	for ctx.Err() == nil {
+		up.Store(false)
 		log.Printf("[capture] source=%s (dev %s) starting rtl_tcp on %s (freq=%s gain=%s)", source, devIdx, server, freq, p.gain)
 		tcpArgs := []string{"-d", devIdx, "-a", "127.0.0.1", "-p", itoa(port), "-P", ppm}
 		if p.gain != "" {
 			tcpArgs = append(tcpArgs, "-g", p.gain)
 		}
+		openLock.Lock()
 		tcp := exec.CommandContext(ctx, "rtl_tcp", tcpArgs...)
 		tcp.Stderr = prefixWriter("rtl_tcp:" + source)
 		if err := tcp.Start(); err != nil {
+			openLock.Unlock()
 			log.Printf("[capture] source=%s rtl_tcp start: %v", source, err)
 			if !sleepCtx(ctx, 5*time.Second) {
 				return
 			}
 			continue
 		}
-		time.Sleep(2 * time.Second) // let rtl_tcp bind the device
+		time.Sleep(2 * time.Second) // hold the open lock while rtl_tcp binds the device
+		openLock.Unlock()
 
 		amrArgs := []string{"-server=" + server, "-msgtype=" + msgtype, "-format=json", "-centerfreq=" + freq}
 		if p.filt != "" {
@@ -261,7 +311,9 @@ func superviseSDR(ctx context.Context, d *db.DB, source string, p scanParams) {
 			}
 			continue
 		}
+		up.Store(true) // pipeline live; healthy even if the meters are quiet
 		ingest(ctx, d, source, stdout)
+		up.Store(false)
 
 		_ = amr.Wait()
 		_ = tcp.Process.Kill()
