@@ -1,5 +1,5 @@
 // winnow API client + SSE stream hook (no polling).
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 export interface Meter {
   endpoint_id: number;
@@ -146,7 +146,7 @@ export const api = {
 };
 
 export type StreamEvent =
-  | { type: "reading"; endpoint_id: number }
+  | { type: "reading"; endpoint_id: number; source: string }
   | { type: "reference"; power: number }
   | { type: "config" };
 
@@ -162,16 +162,4 @@ export function useStream(onEvent: (e: StreamEvent) => void) {
     es.onerror = () => { /* EventSource auto-reconnects */ };
     return () => es.close();
   }, []);
-}
-
-// useAsync runs a loader on mount and whenever `dep` changes, with a manual reload.
-export function useAsync<T>(loader: () => Promise<T>, dep: any = null) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const loaderRef = useRef(loader);
-  loaderRef.current = loader;
-  const reload = () =>
-    loaderRef.current().then((d) => { setData(d); setError(null); }).catch((e) => setError(String(e)));
-  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [dep]);
-  return { data, error, reload };
 }

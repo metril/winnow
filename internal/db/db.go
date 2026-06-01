@@ -83,8 +83,10 @@ ON CONFLICT (endpoint_id, source) DO UPDATE SET
   last_seen = GREATEST(meter_source.last_seen, EXCLUDED.last_seen)`,
 			r.EndpointID, r.Source, r.TS)
 	}
-	// pg_notify payload is the endpoint id; cheap, broadcast to all listeners.
-	_, _ = d.pool.Exec(ctx, `SELECT pg_notify('winnow', $1)`, strconv.FormatInt(r.EndpointID, 10))
+	// pg_notify payload is "endpoint_id\x1fsource" so SSE clients can tally live
+	// per-source capture activity without polling /api/health.
+	_, _ = d.pool.Exec(ctx, `SELECT pg_notify('winnow', $1)`,
+		strconv.FormatInt(r.EndpointID, 10)+"\x1f"+r.Source)
 	return nil
 }
 

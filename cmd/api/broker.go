@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
-	"sync"
+	"strings"
 	"time"
+
+	"sync"
 
 	"winnow/internal/db"
 )
@@ -65,7 +68,9 @@ func (b *broker) run(ctx context.Context, d *db.DB) {
 			var ev string
 			switch n.Channel {
 			case "winnow":
-				ev = fmt.Sprintf(`{"type":"reading","endpoint_id":%s}`, n.Payload)
+				id, src, _ := strings.Cut(n.Payload, "\x1f")
+				srcJSON, _ := json.Marshal(src)
+				ev = fmt.Sprintf(`{"type":"reading","endpoint_id":%s,"source":%s}`, id, srcJSON)
 			case "winnow_ref":
 				ev = fmt.Sprintf(`{"type":"reference","power":%s}`, n.Payload)
 			case "winnow_config":

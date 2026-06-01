@@ -1,13 +1,18 @@
 import { useMemo, useState } from "react";
-import { api, Meter, useAsync } from "../api";
-import { useLive } from "../App";
+import { Search, Star, Radio, EyeOff, Eye, Trash2, GitCompare, X } from "lucide-react";
+import { api, Meter } from "../api";
+import { useLive } from "../live";
+import { useFetch } from "../fetch";
 import { fmt, shortTs, since } from "../util";
+import { Page } from "./shell";
+import { Card, CardHeader, CardBody, Button, IconButton, Input, Segmented, Badge, Toggle, EmptyState, Dialog, Table, Th, Td, useToast } from "../ui";
 import { MultiSeriesChart } from "./charts";
 import MeterDetail from "./MeterDetail";
-import { Card, SectionTitle, Button, Input, Select, Badge, Toggle, EmptyState, Dialog, useToast } from "../ui";
+
+const RANGES = [{ value: 1, label: "1h" }, { value: 6, label: "6h" }, { value: 24, label: "24h" }, { value: 72, label: "3d" }, { value: 168, label: "7d" }];
 
 export default function Meters() {
-  const { tick } = useLive();
+  const { configVersion } = useLive();
   const toast = useToast();
   const [hours, setHours] = useState(24);
   const [search, setSearch] = useState("");
@@ -28,109 +33,102 @@ export default function Meters() {
     return "?" + p.toString();
   }, [hours, electric, hideIgnored, trackedOnly]);
 
-  const { data, error, reload } = useAsync<Meter[]>(() => api.meters(qs), qs + tick);
-  const meters = (data || []).filter((m) =>
-    !search || String(m.endpoint_id).includes(search) || (m.label || "").toLowerCase().includes(search.toLowerCase()));
+  const { data, error, reload } = useFetch<Meter[]>(() => api.meters(qs), [qs, configVersion]);
+  const meters = (data || []).filter((m) => !search || String(m.endpoint_id).includes(search) || (m.label || "").toLowerCase().includes(search.toLowerCase()));
 
-  const plot = useAsync(
-    () => selected.size ? api.series([...selected], `since=${since(hours)}&bucket=5m&mode=${mode}`) : Promise.resolve({}),
-    [...selected].join(",") + mode + hours + tick);
+  const plot = useFetch(() => selected.size ? api.series([...selected], `since=${since(hours)}&bucket=5m&mode=${mode}`) : Promise.resolve({}), [[...selected].join(","), mode, hours]);
 
   const toggleSel = (id: number) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const patch = (id: number, body: any, msg: string) =>
-    api.patchMeter(id, body).then(() => { reload(); toast.show(msg, "good"); }).catch((e) => toast.show(String(e), "bad"));
-  const doDelete = () =>
-    api.deleteMeter(del!.endpoint_id, purge).then(() => { setDel(null); setPurge(false); setDetail(null); reload(); toast.show(purge ? "Meter purged" : "Meter removed", "good"); });
+  const patch = (id: number, body: any, msg: string) => api.patchMeter(id, body).then(() => { reload(); toast.show(msg, "good"); }).catch((e) => toast.show(String(e), "bad"));
+  const doDelete = () => api.deleteMeter(del!.endpoint_id, purge).then(() => { setDel(null); setPurge(false); setDetail(null); reload(); toast.show(purge ? "Meter purged" : "Meter removed", "good"); });
 
-  const chip = "inline-flex items-center gap-2 text-sm text-muted";
+  const filterChip = "flex items-center gap-2 text-small text-secondary";
   return (
-    <div className="space-y-4">
+    <Page title="Meters" breadcrumb={detail ? `Meters / #${detail}` : undefined}
+      actions={<>
+        <div className="relative"><Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-tertiary" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="search id / label" className="w-48 pl-8" /></div>
+        <Segmented options={RANGES} value={hours} onChange={setHours} />
+      </>}>
+
       <Card>
-        <div className="flex flex-wrap items-center gap-3">
-          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="search id / label" className="max-w-xs" />
-          <Select value={hours} onChange={(e) => setHours(+e.target.value)} className="w-24">
-            <option value={1}>1h</option><option value={6}>6h</option><option value={24}>24h</option><option value={72}>3d</option><option value={168}>7d</option>
-          </Select>
-          <label className={chip}><Toggle checked={electric} onChange={setElectric} /> electric</label>
-          <label className={chip}><Toggle checked={hideIgnored} onChange={setHideIgnored} /> hide ignored</label>
-          <label className={chip}><Toggle checked={trackedOnly} onChange={setTrackedOnly} /> tracked</label>
-          <span className="ml-auto text-sm text-faint">{meters.length} meters · {selected.size} selected</span>
-        </div>
-        {error && <div className="mt-2 text-sm text-bad">{error}</div>}
+        <CardBody className="flex flex-wrap items-center gap-x-5 gap-y-2 !py-3">
+          <label className={filterChip}><Toggle checked={electric} onChange={setElectric} /> electric</label>
+          <label className={filterChip}><Toggle checked={hideIgnored} onChange={setHideIgnored} /> hide ignored</label>
+          <label className={filterChip}><Toggle checked={trackedOnly} onChange={setTrackedOnly} /> tracked only</label>
+          <span className="ml-auto text-small text-tertiary">{meters.length} meters · {selected.size} selected</span>
+        </CardBody>
       </Card>
 
       {selected.size > 0 && (
         <Card>
-          <SectionTitle right={<>
-            <Select value={mode} onChange={(e) => setMode(e.target.value as any)} className="w-44">
-              <option value="delta">per-bucket usage</option><option value="cumulative">cumulative</option>
-            </Select>
-            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>clear</Button>
-          </>}>Comparing {selected.size} meters</SectionTitle>
-          {plot.data && <MultiSeriesChart data={plot.data} />}
+          <CardHeader title={<span className="inline-flex items-center gap-2"><GitCompare size={16} /> Comparing {selected.size} meters</span>}
+            actions={<>
+              <Segmented options={[{ value: "delta", label: "usage" }, { value: "cumulative", label: "cumulative" }]} value={mode} onChange={setMode as any} />
+              <Button size="sm" variant="ghost" icon={<X size={14} />} onClick={() => setSelected(new Set())}>clear</Button>
+            </>} />
+          <CardBody>{plot.data && <MultiSeriesChart data={plot.data} />}</CardBody>
         </Card>
       )}
 
-      <Card className="overflow-hidden p-0">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-surface2/60 text-left text-xs text-muted">
-              <tr>
-                <th className="px-3 py-2"></th><th className="px-3 py-2 font-medium">meter</th><th className="px-3 py-2 font-medium">commodity</th>
-                <th className="px-3 py-2 font-medium">type</th><th className="px-3 py-2 font-medium text-right">pkts/hr</th>
-                <th className="px-3 py-2 font-medium text-right">srcs</th><th className="px-3 py-2 font-medium text-right">movement</th>
-                <th className="px-3 py-2 font-medium text-right">latest</th><th className="px-3 py-2 font-medium">last seen</th>
-                <th className="px-3 py-2 font-medium">actions</th>
+      <Card>
+        {error && <CardBody><div className="text-small text-bad">{error}</div></CardBody>}
+        <Table>
+          <thead><tr>
+            <Th /><Th>meter</Th><Th>commodity</Th><Th>type</Th><Th num>pkts/hr</Th><Th num>srcs</Th>
+            <Th num>movement</Th><Th num>latest</Th><Th>last seen</Th><Th>actions</Th>
+          </tr></thead>
+          <tbody>
+            {meters.map((m) => (
+              <tr key={m.endpoint_id} className={"border-b border-border/60 hover:bg-raised/50 " + (detail === m.endpoint_id ? "bg-raised " : "") + (m.is_mine ? "shadow-[inset_2px_0_0] shadow-gold/50" : "")}>
+                <Td><input type="checkbox" className="accent-brand" checked={selected.has(m.endpoint_id)} onChange={() => toggleSel(m.endpoint_id)} /></Td>
+                <Td>
+                  <button className="inline-flex items-center gap-2 hover:text-brand" onClick={() => setDetail(detail === m.endpoint_id ? null : m.endpoint_id)}>
+                    <span className="id-pill">#{m.endpoint_id}</span>
+                    {m.publish && <Badge tone="gold"><Radio size={10} /> HA</Badge>}
+                    {m.is_mine && !m.publish && <Badge tone="brand">tracked</Badge>}
+                    {m.ignored && <Badge>ignored</Badge>}
+                    {m.label && <span className="text-secondary">{m.label}</span>}
+                  </button>
+                </Td>
+                <Td className="text-secondary">{m.commodity}</Td>
+                <Td className="text-secondary">{m.msg_type}</Td>
+                <Td num>{fmt(m.packets_per_hour, 1)}</Td>
+                <Td num>{m.sources}</Td>
+                <Td num>{fmt(m.total_movement)}</Td>
+                <Td num className="text-secondary">{fmt(m.latest_consumption)}</Td>
+                <Td className="text-tertiary">{shortTs(m.last_seen)}</Td>
+                <Td>
+                  <div className="flex">
+                    <IconButton label={m.is_mine ? "untrack" : "track"} onClick={() => patch(m.endpoint_id, { is_mine: !m.is_mine }, m.is_mine ? "Untracked" : "Tracked")}>
+                      <Star size={15} className={m.is_mine ? "fill-gold text-gold" : ""} /></IconButton>
+                    <IconButton label={m.publish ? "stop publishing" : "publish"} onClick={() => patch(m.endpoint_id, { publish: !m.publish, is_mine: true }, m.publish ? "Unpublished" : "Publishing")}>
+                      <Radio size={15} className={m.publish ? "text-gold" : ""} /></IconButton>
+                    <IconButton label={m.ignored ? "unignore" : "ignore"} onClick={() => patch(m.endpoint_id, { ignored: !m.ignored }, m.ignored ? "Unignored" : "Ignored")}>
+                      {m.ignored ? <Eye size={15} /> : <EyeOff size={15} />}</IconButton>
+                    <IconButton label="delete" danger onClick={() => { setDel(m); setPurge(false); }}><Trash2 size={15} /></IconButton>
+                  </div>
+                </Td>
               </tr>
-            </thead>
-            <tbody>
-              {meters.map((m) => (
-                <tr key={m.endpoint_id} className={"border-t border-border/50 hover:bg-surface2/40 " +
-                  (detail === m.endpoint_id ? "bg-surface2/60 " : "") + (m.is_mine ? "ring-1 ring-inset ring-gold/20" : "")}>
-                  <td className="px-3 py-2"><input type="checkbox" className="accent-brand" checked={selected.has(m.endpoint_id)} onChange={() => toggleSel(m.endpoint_id)} /></td>
-                  <td className="px-3 py-2">
-                    <button className="mono hover:text-brand" onClick={() => setDetail(detail === m.endpoint_id ? null : m.endpoint_id)}>#{m.endpoint_id}</button>
-                    {m.publish && <Badge tone="gold" className="ml-2">▲ HA</Badge>}
-                    {m.is_mine && !m.publish && <Badge tone="brand" className="ml-2">tracked</Badge>}
-                    {m.ignored && <Badge className="ml-2">ignored</Badge>}
-                    {m.label && <span className="ml-2 text-muted">{m.label}</span>}
-                  </td>
-                  <td className="px-3 py-2 text-muted">{m.commodity}</td>
-                  <td className="px-3 py-2 text-muted">{m.msg_type}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{fmt(m.packets_per_hour, 1)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{m.sources}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{fmt(m.total_movement)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums text-muted">{fmt(m.latest_consumption)}</td>
-                  <td className="px-3 py-2 text-faint">{shortTs(m.last_seen)}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex gap-1">
-                      <Button size="sm" variant={m.is_mine ? "primary" : "default"} onClick={() => patch(m.endpoint_id, { is_mine: !m.is_mine }, m.is_mine ? "Untracked" : "Tracked")}>{m.is_mine ? "Tracked" : "Track"}</Button>
-                      <Button size="sm" variant={m.publish ? "gold" : "ghost"} onClick={() => patch(m.endpoint_id, { publish: !m.publish, is_mine: true }, m.publish ? "Unpublished" : "Publishing")}>▲</Button>
-                      <Button size="sm" variant="ghost" title={m.ignored ? "unignore" : "ignore"} onClick={() => patch(m.endpoint_id, { ignored: !m.ignored }, m.ignored ? "Unignored" : "Ignored")}>{m.ignored ? "↩" : "∅"}</Button>
-                      <Button size="sm" variant="ghost" title="delete" onClick={() => { setDel(m); setPurge(false); }}>🗑</Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {!meters.length && <tr><td colSpan={10}><EmptyState>No meters in this window.</EmptyState></td></tr>}
-            </tbody>
-          </table>
-        </div>
+            ))}
+            {!meters.length && <tr><Td className="!py-0"><div /></Td><td colSpan={9}><EmptyState icon={<Search size={20} />}>No meters in this window.</EmptyState></td></tr>}
+          </tbody>
+        </Table>
       </Card>
 
-      {detail !== null && <Card><MeterDetail id={detail} hours={hours} onChange={reload} /></Card>}
+      {detail !== null && <Card><CardBody><MeterDetail id={detail} hours={hours} onChange={reload} /></CardBody></Card>}
 
       <Dialog open={!!del} onClose={() => setDel(null)} title={`Remove meter #${del?.endpoint_id}`}
         footer={<>
           <Button variant="ghost" onClick={() => setDel(null)}>Cancel</Button>
-          <Button variant="danger" success={purge ? "Purged" : "Removed"} onClick={doDelete}>{purge ? "Purge everything" : "Remove"}</Button>
+          <Button variant="danger" onClick={doDelete} success={purge ? "Purged" : "Removed"}>{purge ? "Purge everything" : "Remove"}</Button>
         </>}>
         <p>Removes tracking and annotations for this meter.</p>
         <label className="mt-3 flex items-center gap-2 text-text">
           <input type="checkbox" className="accent-bad" checked={purge} onChange={(e) => setPurge(e.target.checked)} />
-          Also <strong>purge stored readings</strong> (irreversible). It reappears only if it broadcasts again.
+          Also <strong>purge stored readings</strong> (irreversible).
         </label>
       </Dialog>
-    </div>
+    </Page>
   );
 }

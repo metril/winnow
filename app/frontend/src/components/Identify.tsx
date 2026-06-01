@@ -1,108 +1,135 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { Crosshair, Star, Radio, AlertTriangle, Settings, Trophy } from "lucide-react";
 import { api, CorrRow } from "../api";
-import { useLive } from "../App";
+import { useLive } from "../live";
+import { useFetch } from "../fetch";
 import { fmt } from "../util";
-import { Card, SectionTitle, Button, Select, Badge, EmptyState } from "../ui";
-import { OverlayChart, CorrelationBar } from "./charts";
+import { Page } from "./shell";
+import { Card, CardHeader, CardBody, Button, Segmented, Badge, EmptyState, Skeleton, Table, Th, Td } from "../ui";
+import { OverlayChart, ConfidenceBar } from "./charts";
+
+const RANGES = [{ value: 1, label: "1h" }, { value: 6, label: "6h" }, { value: 24, label: "24h" }, { value: 72, label: "3d" }];
+
+async function loadAll(hours: number) {
+  const d = await api.identify(hours);
+  let ref: any[] = [], series: Record<string, any[]> = {};
+  if (d.ranking?.length) {
+    const top = d.ranking.slice(0, 3).map((r: CorrRow) => r.endpoint_id);
+    [ref, series] = await Promise.all([api.referenceSeries(d.start, d.end), api.series(top, `since=${d.start}&bucket=5m&mode=delta`)]);
+  }
+  return { d, ref, series };
+}
 
 export default function Identify() {
-  const { tick, lastPower } = useLive();
+  const { power, configVersion } = useLive();
   const [hours, setHours] = useState(6);
-  const [data, setData] = useState<any>(null);
-  const [ref, setRef] = useState<{ bucket: string; value: number }[]>([]);
-  const [series, setSeries] = useState<Record<string, { bucket: string; value: number }[]>>({});
-  const [err, setErr] = useState<string | null>(null);
+  const { data, reload } = useFetch(() => loadAll(hours), [hours, configVersion]);
 
-  const load = async () => {
-    try {
-      const d = await api.identify(hours);
-      setData(d); setErr(null);
-      if (d.ranking?.length) {
-        const top = d.ranking.slice(0, 3).map((r: CorrRow) => r.endpoint_id);
-        const [rs, ss] = await Promise.all([
-          api.referenceSeries(d.start, d.end),
-          api.series(top, `since=${d.start}&bucket=5m&mode=delta`),
-        ]);
-        setRef(rs); setSeries(ss);
-      }
-    } catch (e) { setErr(String(e)); }
-  };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [hours, tick]);
-
-  const ranking: CorrRow[] = data?.ranking || [];
-  const noSet = data && !(data.monitored_entities?.length);
-  const floor = data?.monitored_floor_w;
-  const apply = (r: CorrRow) => api.patchMeter(r.endpoint_id, { pub_multiplier: r.suggested_multiplier, pub_unit: "kWh" }).then(load);
+  const d = data?.d;
+  const ranking: CorrRow[] = d?.ranking || [];
+  const noSet = d && !(d.monitored_entities?.length);
+  const floor = d?.monitored_floor_w;
+  const winner = ranking[0];
+  const apply = (r: CorrRow) => api.patchMeter(r.endpoint_id, { pub_multiplier: r.suggested_multiplier, pub_unit: "kWh" }).then(reload);
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <SectionTitle
-          right={<>
-            <Select value={hours} onChange={(e) => setHours(+e.target.value)} className="w-24">
-              <option value={1}>1h</option><option value={6}>6h</option><option value={24}>24h</option><option value={72}>3d</option>
-            </Select>
-            <Button variant="primary" onClick={load} success="Analyzed">Analyze</Button>
-          </>}
-          sub="Ranked by how tightly each meter tracks your total monitored power. The real meter shows a high correlation and a clean regression — which also calibrates its units and estimates your unmonitored baseline.">
-          Identify your meter
-        </SectionTitle>
-        <div className="flex flex-wrap items-center gap-2">
-          {floor != null && <Badge tone="gold">floor ≈ {fmt(floor)} W</Badge>}
-          {lastPower !== null && <Badge tone="brand">monitored now {fmt(lastPower)} W</Badge>}
-          {noSet && <Badge tone="bad">no monitored devices — set them in Settings</Badge>}
-        </div>
-      </Card>
+    <Page title="Identify your meter"
+      actions={<>
+        {power != null && <Badge tone="gold">monitored {fmt(power)} W</Badge>}
+        {floor != null && floor > 0 && <Badge tone="brand">floor {fmt(floor)} W</Badge>}
+        <Segmented options={RANGES} value={hours} onChange={setHours} />
+        <Button variant="primary" icon={<Crosshair size={15} />} onClick={reload} success="Analyzed">Analyze</Button>
+      </>}>
 
-      {ref.length > 0 && (
-        <Card>
-          <SectionTitle sub="Yellow = your total monitored power; lines = top candidate meters' per-minute usage.">Overlay</SectionTitle>
-          <OverlayChart reference={ref} meters={series} />
+      {noSet && (
+        <Card variant="alert">
+          <CardBody className="flex items-center gap-3">
+            <AlertTriangle size={18} className="text-bad" />
+            <div className="flex-1 text-small">
+              <div className="font-medium text-text">No ground truth selected</div>
+              <div className="text-secondary">Pick your Home-Assistant power sensors in Settings so winnow can correlate against real usage.</div>
+            </div>
+            <Button variant="default" icon={<Settings size={15} />}>Open Settings</Button>
+          </CardBody>
         </Card>
       )}
 
-      <Card className="overflow-hidden p-0">
-        <table className="w-full text-sm">
-          <thead className="bg-surface2/60 text-left text-xs text-muted">
-            <tr>
-              <th className="px-3 py-2 font-medium">#</th><th className="px-3 py-2 font-medium">meter</th>
-              <th className="px-3 py-2 font-medium">commodity</th><th className="px-3 py-2 font-medium w-44">correlation</th>
-              <th className="px-3 py-2 font-medium text-right">calibration</th><th className="px-3 py-2 font-medium text-right">baseline</th>
-              <th className="px-3 py-2 font-medium text-center">floor</th><th className="px-3 py-2 font-medium text-right">pkts</th>
-              <th className="px-3 py-2 font-medium">actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ranking.slice(0, 15).map((r, i) => (
-              <tr key={r.endpoint_id} className={"border-t border-border/50 " + (i === 0 && (r.r ?? 0) > 0.5 ? "bg-brand/5" : "")}>
-                <td className="px-3 py-2 text-faint">{i + 1}</td>
-                <td className={"px-3 py-2 mono " + (i === 0 ? "text-brand font-medium" : "")}>#{r.endpoint_id}</td>
-                <td className="px-3 py-2 text-muted">{r.commodity}</td>
-                <td className="px-3 py-2"><CorrelationBar r={r.r} /></td>
-                <td className="px-3 py-2 text-right">
-                  {r.suggested_multiplier
-                    ? <Button size="sm" title="set publish multiplier (kWh/unit)" onClick={() => apply(r)} success="Multiplier applied">×{r.suggested_multiplier.toPrecision(3)}</Button>
-                    : <span className="text-faint">–</span>}
-                </td>
-                <td className="px-3 py-2 text-right tabular-nums text-muted">{r.baseline_w != null ? `${fmt(r.baseline_w)} W` : "–"}</td>
-                <td className="px-3 py-2 text-center">{r.floor_ok == null ? <span className="text-faint">–</span> : r.floor_ok ? <span className="text-good">✓</span> : <span className="text-bad">✗</span>}</td>
-                <td className="px-3 py-2 text-right tabular-nums text-muted">{r.window_packets}</td>
-                <td className="px-3 py-2"><RowActions id={r.endpoint_id} onChange={load} /></td>
-              </tr>
-            ))}
-            {!ranking.length && <tr><td colSpan={9}><EmptyState>{err || "No data in window."}</EmptyState></td></tr>}
-          </tbody>
-        </table>
-      </Card>
-    </div>
+      {!data ? <Skeleton className="h-40" />
+        : winner ? <WinnerCard r={winner} onApply={apply} onReload={reload} />
+          : <Card><CardBody><EmptyState icon={<Crosshair size={22} />} title="No candidates yet">Switch a known load on and off, then Analyze.</EmptyState></CardBody></Card>}
+
+      {data && data.ref.length > 0 && (
+        <Card>
+          <CardHeader title="Monitored power vs top candidates" subtitle="Your meter's usage should track the yellow line." />
+          <CardBody><OverlayChart reference={data.ref} meters={data.series} /></CardBody>
+        </Card>
+      )}
+
+      {ranking.length > 0 && (
+        <Card>
+          <CardHeader title="All candidates" subtitle="Ranked by correlation with your monitored power." />
+          <Table>
+            <thead><tr>
+              <Th>#</Th><Th>meter</Th><Th>commodity</Th><Th className="w-44">correlation</Th>
+              <Th num>calibration</Th><Th num>baseline</Th><Th>floor</Th><Th num>pkts</Th><Th>actions</Th>
+            </tr></thead>
+            <tbody>
+              {ranking.slice(0, 15).map((r, i) => (
+                <tr key={r.endpoint_id} className={"border-b border-border/60 hover:bg-raised/50 " + (i === 0 ? "bg-brand/5" : "")}>
+                  <Td className="text-tertiary">{i + 1}</Td>
+                  <Td><span className="id-pill">#{r.endpoint_id}</span></Td>
+                  <Td className="text-secondary">{r.commodity}</Td>
+                  <Td><ConfidenceBar r={r.r} /></Td>
+                  <Td num>{r.suggested_multiplier ? <Button size="sm" onClick={() => apply(r)} success="Calibration applied">×{r.suggested_multiplier.toPrecision(3)}</Button> : <span className="text-tertiary">–</span>}</Td>
+                  <Td num className="text-secondary">{r.baseline_w != null ? `${fmt(r.baseline_w)} W` : "–"}</Td>
+                  <Td>{r.floor_ok == null ? <span className="text-tertiary">–</span> : r.floor_ok ? <span className="text-good">✓</span> : <span className="text-bad">✗</span>}</Td>
+                  <Td num className="text-secondary">{r.window_packets}</Td>
+                  <Td><RowActions id={r.endpoint_id} onChange={reload} /></Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </Card>
+      )}
+    </Page>
+  );
+}
+
+function WinnerCard({ r, onApply, onReload }: { r: CorrRow; onApply: (r: CorrRow) => Promise<any>; onReload: () => void }) {
+  const conf = r.r ?? 0;
+  const strong = conf > 0.5;
+  return (
+    <Card variant={strong ? "accent" : "default"}>
+      <CardBody className="flex flex-col gap-4 sm:flex-row sm:items-center">
+        <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gold/12 text-gold"><Trophy size={26} /></div>
+        <div className="flex-1">
+          <div className="flex items-center gap-2 text-small text-secondary">{strong ? "Most likely your meter" : "Top candidate (weak — run a load test)"}</div>
+          <div className="mt-0.5 flex items-center gap-2">
+            <span className="text-h1 mono text-text">#{r.endpoint_id}</span>
+            <Badge tone={r.commodity === "electric" ? "gold" : "brand"}>{r.commodity}</Badge>
+          </div>
+          <div className="mt-2 max-w-md"><ConfidenceBar r={r.r} /></div>
+          <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-micro text-tertiary">
+            {r.suggested_multiplier && <span>suggested ×{r.suggested_multiplier.toPrecision(3)} kWh/unit</span>}
+            {r.baseline_w != null && <span>baseline {fmt(r.baseline_w)} W</span>}
+            <span>{r.window_packets} packets</span>
+          </div>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          {r.suggested_multiplier && <Button variant="default" onClick={() => onApply(r)} success="Calibration applied">Calibrate</Button>}
+          <Button variant="default" icon={<Star size={15} />} onClick={() => api.patchMeter(r.endpoint_id, { is_mine: true, is_candidate: true }).then(onReload)} success="Tracked">Track</Button>
+          <Button variant="gold" icon={<Radio size={15} />} onClick={() => api.patchMeter(r.endpoint_id, { is_mine: true, publish: true }).then(onReload)} success="Publishing to HA">Publish</Button>
+        </div>
+      </CardBody>
+    </Card>
   );
 }
 
 function RowActions({ id, onChange }: { id: number; onChange: () => void }) {
   return (
     <div className="flex gap-1.5">
-      <Button size="sm" success="Tracked" onClick={() => api.patchMeter(id, { is_mine: true, is_candidate: true }).then(onChange)}>Track</Button>
-      <Button size="sm" variant="gold" success="Publishing to HA" onClick={() => api.patchMeter(id, { is_mine: true, publish: true }).then(onChange)}>Publish</Button>
+      <Button size="sm" onClick={() => api.patchMeter(id, { is_mine: true, is_candidate: true }).then(onChange)} success="Tracked">Track</Button>
+      <Button size="sm" variant="gold" onClick={() => api.patchMeter(id, { is_mine: true, publish: true }).then(onChange)} success="Publishing">Publish</Button>
     </div>
   );
 }
