@@ -64,11 +64,16 @@ type Config struct {
 	Currency          string
 }
 
-// DeviceConfig is per-dongle capture configuration (keyed by source id).
+// DeviceConfig is per-dongle capture configuration (keyed by source id). Every
+// scan field is an optional override: empty means "inherit the global default".
 type DeviceConfig struct {
-	Enabled *bool  `json:"enabled"` // nil/absent = enabled by default
-	Gain    string `json:"gain"`    // overrides the global gain when set
-	Label   string `json:"label"`
+	Enabled  *bool  `json:"enabled"` // nil/absent = enabled by default
+	Label    string `json:"label"`
+	Freq     string `json:"freq"`
+	Gain     string `json:"gain"`
+	PPM      string `json:"ppm"`
+	MsgType  string `json:"msgtype"`
+	FilterID string `json:"filterid"`
 }
 
 // CaptureConfig is the live scan configuration the capture service applies.
@@ -89,14 +94,20 @@ func (c CaptureConfig) DeviceEnabled(source string) bool {
 	return true
 }
 
-// DeviceGain returns the effective gain for a dongle (per-device override beats
-// the global gain).
-func (c CaptureConfig) DeviceGain(source string) string {
-	if dc, ok := c.Devices[source]; ok && dc.Gain != "" {
-		return dc.Gain
+// pick returns the per-device override when set, else the global default.
+func pick(override, def string) string {
+	if override != "" {
+		return override
 	}
-	return c.Gain
+	return def
 }
+
+// Effective per-dongle scan settings (override beats the global default).
+func (c CaptureConfig) DeviceFreq(source string) string     { return pick(c.Devices[source].Freq, c.Freq) }
+func (c CaptureConfig) DeviceGain(source string) string     { return pick(c.Devices[source].Gain, c.Gain) }
+func (c CaptureConfig) DevicePPM(source string) string      { return pick(c.Devices[source].PPM, c.PPM) }
+func (c CaptureConfig) DeviceMsgType(source string) string  { return pick(c.Devices[source].MsgType, c.MsgType) }
+func (c CaptureConfig) DeviceFilterID(source string) string { return pick(c.Devices[source].FilterID, c.FilterID) }
 
 func parseDevices(v string) map[string]DeviceConfig {
 	out := map[string]DeviceConfig{}

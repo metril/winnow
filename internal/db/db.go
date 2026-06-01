@@ -107,8 +107,13 @@ type Device struct {
 	Tuner          string   `json:"tuner"`
 	LastSeen       *string  `json:"last_seen"`
 	Enabled        bool     `json:"enabled"`
-	Gain           string   `json:"gain"`
 	Label          string   `json:"label"`
+	// per-dongle scan overrides (empty = inherit the global default)
+	Freq           string   `json:"freq"`
+	Gain           string   `json:"gain"`
+	PPM            string   `json:"ppm"`
+	MsgType        string   `json:"msgtype"`
+	FilterID       string   `json:"filterid"`
 	Alive          bool     `json:"alive"`
 	PacketsLastMin int64    `json:"packets_last_min"`
 	MetersHeard    int64    `json:"meters_heard"`

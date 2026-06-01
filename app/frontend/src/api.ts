@@ -63,13 +63,14 @@ export interface Status {
 
 export interface PowerEntity { entity_id: string; name: string; state: string; unit: string; kind: string; }
 
-export interface Device {
+export interface ScanSettings { freq: string; gain: string; ppm: string; msgtype: string; filterid: string; }
+export interface Device extends ScanSettings {
   serial: string; dev_index: number; name: string; tuner: string;
-  last_seen: string | null; enabled: boolean; gain: string; label: string;
+  last_seen: string | null; enabled: boolean; label: string;
   alive: boolean; packets_last_min: number; meters_heard: number; age_seconds: number | null;
 }
-export interface ScanSettings { freq: string; gain: string; ppm: string; msgtype: string; filterid: string; }
-export interface DevicesResp { devices: Device[]; scan: ScanSettings; }
+export interface DeviceConfig { enabled?: boolean; label?: string; freq?: string; gain?: string; ppm?: string; msgtype?: string; filterid?: string; }
+export interface DevicesResp { devices: Device[]; defaults: ScanSettings; }
 
 export interface Anomaly { kind: string; endpoint_id?: number; source?: string; detail: string; }
 export interface PublishedLive {
@@ -120,7 +121,7 @@ export const api = {
     j<any>("/api/ha/create-helper", { method: "POST", body: JSON.stringify({ name, entities }) }),
 
   devices: () => j<DevicesResp>("/api/devices"),
-  putDevice: (serial: string, body: { enabled?: boolean; gain?: string; label?: string }) =>
+  putDevice: (serial: string, body: DeviceConfig) =>
     j<any>(`/api/devices/${encodeURIComponent(serial)}`, { method: "PUT", body: JSON.stringify(body) }),
 
   overview: () => j<Overview>("/api/overview"),

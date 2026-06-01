@@ -423,15 +423,16 @@ func (s *server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range devs {
+		ov := cfg.Capture.Devices[devs[i].Serial] // raw per-dongle overrides (empty = inherit)
 		devs[i].Enabled = cfg.Capture.DeviceEnabled(devs[i].Serial)
-		devs[i].Gain = cfg.Capture.DeviceGain(devs[i].Serial)
-		if dc, ok := cfg.Capture.Devices[devs[i].Serial]; ok {
-			devs[i].Label = dc.Label
-		}
+		devs[i].Label = ov.Label
+		devs[i].Freq, devs[i].Gain, devs[i].PPM = ov.Freq, ov.Gain, ov.PPM
+		devs[i].MsgType, devs[i].FilterID = ov.MsgType, ov.FilterID
 	}
 	writeJSON(w, map[string]any{
 		"devices": devs,
-		"scan": map[string]any{
+		// global defaults inherited by any dongle that doesn't override them
+		"defaults": map[string]any{
 			"freq": cfg.Capture.Freq, "gain": cfg.Capture.Gain, "ppm": cfg.Capture.PPM,
 			"msgtype": cfg.Capture.MsgType, "filterid": cfg.Capture.FilterID,
 		},

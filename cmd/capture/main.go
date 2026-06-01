@@ -127,11 +127,11 @@ func (m *manager) reconcile(ctx context.Context) {
 		}
 		desired[dev.source] = scanParams{
 			devIndex: dev.index,
-			freq:     cfg.Capture.Freq,
+			freq:     cfg.Capture.DeviceFreq(dev.source),
 			gain:     cfg.Capture.DeviceGain(dev.source),
-			ppm:      cfg.Capture.PPM,
-			msgtype:  cfg.Capture.MsgType,
-			filt:     cfg.Capture.FilterID,
+			ppm:      cfg.Capture.DevicePPM(dev.source),
+			msgtype:  cfg.Capture.DeviceMsgType(dev.source),
+			filt:     cfg.Capture.DeviceFilterID(dev.source),
 		}
 	}
 	// stop devices that vanished, got disabled, or whose params changed
