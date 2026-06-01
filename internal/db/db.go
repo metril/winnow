@@ -99,6 +99,17 @@ ON CONFLICT (serial) DO UPDATE SET
 	return err
 }
 
+// PruneDevices removes inventory rows for dongles not in the currently-detected
+// set, so the Devices list reflects what's actually plugged in (departed dongles
+// and flaky-enumeration phantoms don't linger). No-op on an empty set.
+func (d *DB) PruneDevices(ctx context.Context, keep []string) error {
+	if len(keep) == 0 {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `DELETE FROM sdr_devices WHERE serial <> ALL($1)`, keep)
+	return err
+}
+
 // Device is one detected SDR dongle joined with live capture health.
 type Device struct {
 	Serial         string   `json:"serial"`

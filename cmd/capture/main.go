@@ -132,9 +132,13 @@ func (m *manager) enumerateOnce(ctx context.Context) []sdrDevice {
 		devs := enumerateRTL(ctx)
 		if len(devs) > 0 {
 			log.Printf("[capture] detected %d SDR(s): %s", len(devs), describe(devs))
+			serials := make([]string, 0, len(devs))
 			for _, dev := range devs {
 				_ = m.d.UpsertDevice(ctx, dev.source, dev.index, dev.name, dev.tuner)
+				serials = append(serials, dev.source)
 			}
+			// drop inventory rows for dongles that are no longer present
+			_ = m.d.PruneDevices(ctx, serials)
 			return devs
 		}
 		log.Printf("[capture] no SDRs detected; retrying in 5s")
