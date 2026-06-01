@@ -14,7 +14,7 @@ const epsilon = 1e-9
 func (d *DB) dataSpan(ctx context.Context) (time.Time, time.Time, bool) {
 	var lo, hi *time.Time
 	err := d.pool.QueryRow(ctx,
-		`SELECT min(ts), max(ts) FROM readings WHERE consumption IS NOT NULL AND endpoint_id IS NOT NULL`).Scan(&lo, &hi)
+		`SELECT min(first_seen), max(last_seen) FROM meter_index`).Scan(&lo, &hi)
 	if err != nil || lo == nil || hi == nil {
 		return time.Time{}, time.Time{}, false
 	}
@@ -38,16 +38,18 @@ func (d *DB) Correlation(ctx context.Context, start, end time.Time) ([]model.Cor
 	}
 
 	rows, err := d.pool.Query(ctx, `
-SELECT endpoint_id,
-       max(msg_type)                          AS msg_type,
-       max(endpoint_type)                     AS endpoint_type,
-       max(consumption)-min(consumption)      AS total_delta,
-       max(consumption) FILTER (WHERE ts BETWEEN $1 AND $2) -
-       min(consumption) FILTER (WHERE ts BETWEEN $1 AND $2) AS window_delta,
-       count(*) FILTER (WHERE ts BETWEEN $1 AND $2)         AS window_packets
-FROM readings
-WHERE consumption IS NOT NULL AND endpoint_id IS NOT NULL
-GROUP BY endpoint_id`, start, end)
+SELECT i.endpoint_id, i.msg_type, i.endpoint_type,
+       i.max_consumption - i.min_consumption AS total_delta,
+       w.window_delta, w.window_packets
+FROM meter_index i
+LEFT JOIN (
+  SELECT endpoint_id,
+         max(max_c) - min(min_c) AS window_delta,
+         sum(n)                  AS window_packets
+  FROM readings_1m
+  WHERE bucket BETWEEN $1 AND $2
+  GROUP BY endpoint_id
+) w ON w.endpoint_id = i.endpoint_id`, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -58,11 +60,15 @@ GROUP BY endpoint_id`, start, end)
 		var r model.CorrRow
 		var msgType *string
 		var totalDelta, windowDelta *float64
-		if err := rows.Scan(&r.EndpointID, &msgType, &r.EndpointType, &totalDelta, &windowDelta, &r.WindowPackets); err != nil {
+		var windowPackets *int64
+		if err := rows.Scan(&r.EndpointID, &msgType, &r.EndpointType, &totalDelta, &windowDelta, &windowPackets); err != nil {
 			return nil, err
 		}
 		if msgType != nil {
 			r.MsgType = *msgType
+		}
+		if windowPackets != nil {
+			r.WindowPackets = *windowPackets
 		}
 		r.Commodity = ert.Commodity(r.EndpointType)
 		wd := deref(windowDelta)
@@ -118,11 +124,9 @@ WITH per_entity AS (
   GROUP BY b, entity_id),
 ref AS (SELECT b, sum(coalesce(w,0)) AS power FROM per_entity GROUP BY b),
 m AS (
-  SELECT endpoint_id, time_bucket('1 minute', ts) AS b,
-         max(consumption)-min(consumption) AS delta
-  FROM readings
-  WHERE ts >= $1 AND ts <= $2 AND consumption IS NOT NULL AND endpoint_id IS NOT NULL
-  GROUP BY endpoint_id, b)
+  SELECT endpoint_id, bucket AS b, (max_c - min_c) AS delta
+  FROM readings_1m
+  WHERE bucket >= $1 AND bucket <= $2)
 SELECT m.endpoint_id,
        corr(m.delta, ref.power)            AS r,
        regr_slope(m.delta, ref.power)      AS slope,

@@ -19,12 +19,14 @@ type sdrDevice struct {
 	index  int
 	serial string
 	name   string
+	tuner  string
 	source string
 }
 
 var (
 	foundRe   = regexp.MustCompile(`Found (\d+) device`)
 	devLineRe = regexp.MustCompile(`^\s*(\d+):\s+(.*?),\s+(.*?),\s+SN:\s+(.*)$`)
+	tunerRe   = regexp.MustCompile(`Found (.+) tuner`)
 )
 
 // enumerateRTL lists connected RTL-SDR dongles. `rtl_test` prints the full
@@ -44,6 +46,7 @@ func enumerateRTL(ctx context.Context) []sdrDevice {
 	}
 	var devs []sdrDevice
 	want := -1
+	tuner := ""
 	sc := bufio.NewScanner(out)
 	for sc.Scan() {
 		line := sc.Text()
@@ -52,14 +55,23 @@ func enumerateRTL(ctx context.Context) []sdrDevice {
 		}
 		if m := devLineRe.FindStringSubmatch(line); m != nil {
 			idx, _ := strconv.Atoi(m[1])
-			devs = append(devs, sdrDevice{index: idx, name: strings.TrimSpace(m[3]), serial: strings.TrimSpace(m[4])})
+			name := strings.TrimSpace(m[2]) + " " + strings.TrimSpace(m[3])
+			devs = append(devs, sdrDevice{index: idx, name: strings.TrimSpace(name), serial: strings.TrimSpace(m[4])})
 		}
-		if want >= 0 && len(devs) >= want {
+		if m := tunerRe.FindStringSubmatch(line); m != nil {
+			tuner = strings.TrimSpace(m[1])
+		}
+		// the tuner line prints after the device list, so keep reading a little
+		// past the count to pick it up, then stop.
+		if want >= 0 && len(devs) >= want && tuner != "" {
 			break
 		}
 	}
 	cancel()
 	_ = cmd.Wait()
+	for i := range devs {
+		devs[i].tuner = tuner
+	}
 	assignSources(devs)
 	return devs
 }

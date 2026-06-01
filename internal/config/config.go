@@ -27,6 +27,20 @@ const (
 	KeyThresholdW        = "threshold_w"
 	KeyDefaultMultiplier = "default_multiplier"
 	KeyDefaultUnit       = "default_unit"
+
+	// Capture scan settings (read live by the capture service).
+	KeyScanFreq     = "scan_freq"
+	KeyScanGain     = "scan_gain"
+	KeyScanPPM      = "scan_ppm"
+	KeyScanMsgType  = "scan_msgtype"
+	KeyScanFilterID = "scan_filterid"
+	// KeyCaptureDevices is a JSON object keyed by source id (serial) →
+	// {enabled, gain, label}. A device absent from the map is enabled by default.
+	KeyCaptureDevices = "capture_devices"
+
+	// Cost/tariff (used to estimate $ for published meters).
+	KeyCostPerKwh = "cost_per_kwh"
+	KeyCurrency   = "currency"
 )
 
 // SecretKeys are never returned in plaintext by the API (masked as set/unset).
@@ -45,6 +59,52 @@ type Config struct {
 	ThresholdW        float64
 	DefaultMultiplier float64
 	DefaultUnit       string
+	Capture           CaptureConfig
+	CostPerKwh        float64
+	Currency          string
+}
+
+// DeviceConfig is per-dongle capture configuration (keyed by source id).
+type DeviceConfig struct {
+	Enabled *bool  `json:"enabled"` // nil/absent = enabled by default
+	Gain    string `json:"gain"`    // overrides the global gain when set
+	Label   string `json:"label"`
+}
+
+// CaptureConfig is the live scan configuration the capture service applies.
+type CaptureConfig struct {
+	Freq     string
+	Gain     string
+	PPM      string
+	MsgType  string
+	FilterID string
+	Devices  map[string]DeviceConfig
+}
+
+// DeviceEnabled reports whether a dongle should be captured (default true).
+func (c CaptureConfig) DeviceEnabled(source string) bool {
+	if dc, ok := c.Devices[source]; ok && dc.Enabled != nil {
+		return *dc.Enabled
+	}
+	return true
+}
+
+// DeviceGain returns the effective gain for a dongle (per-device override beats
+// the global gain).
+func (c CaptureConfig) DeviceGain(source string) string {
+	if dc, ok := c.Devices[source]; ok && dc.Gain != "" {
+		return dc.Gain
+	}
+	return c.Gain
+}
+
+func parseDevices(v string) map[string]DeviceConfig {
+	out := map[string]DeviceConfig{}
+	if v = strings.TrimSpace(v); v == "" {
+		return out
+	}
+	_ = json.Unmarshal([]byte(v), &out)
+	return out
 }
 
 // parseEntities accepts a JSON array or a comma-separated list of entity_ids.
@@ -96,6 +156,15 @@ func FromMap(m map[string]string) Config {
 	if mult == 0 {
 		mult = 1
 	}
+	cost, _ := strconv.ParseFloat(get(KeyCostPerKwh, "", "0"), 64)
+	capture := CaptureConfig{
+		Freq:     get(KeyScanFreq, "FREQ", "912600155"),
+		Gain:     get(KeyScanGain, "GAIN", ""),
+		PPM:      get(KeyScanPPM, "PPM", "0"),
+		MsgType:  get(KeyScanMsgType, "RTLAMR_MSGTYPE", "scm,scm+,idm"),
+		FilterID: get(KeyScanFilterID, "RTLAMR_FILTERID", ""),
+		Devices:  parseDevices(get(KeyCaptureDevices, "", "")),
+	}
 	return Config{
 		HAURL:             get(KeyHAURL, "HA_URL", ""),
 		HAToken:           get(KeyHAToken, "HA_TOKEN", ""),
@@ -108,6 +177,9 @@ func FromMap(m map[string]string) Config {
 		ThresholdW:        thr,
 		DefaultMultiplier: mult,
 		DefaultUnit:       get(KeyDefaultUnit, "", ""),
+		Capture:           capture,
+		CostPerKwh:        cost,
+		Currency:          get(KeyCurrency, "", "$"),
 	}
 }
 

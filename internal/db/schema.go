@@ -58,6 +58,44 @@ CREATE TABLE IF NOT EXISTS capture_heartbeat (
     total_count BIGINT DEFAULT 0,
     updated_at  TIMESTAMPTZ
 );
+
+-- meter_index is a tiny per-endpoint registry maintained on ingest. It carries
+-- the metadata (msg/endpoint type) and all-time rollups (packets, min/max/last
+-- consumption) the continuous aggregate can't, so reads never scan raw readings
+-- just to learn a meter's type or latest value.
+CREATE TABLE IF NOT EXISTS meter_index (
+    endpoint_id         BIGINT PRIMARY KEY,
+    msg_type            TEXT,
+    endpoint_type       INTEGER,
+    first_seen          TIMESTAMPTZ,
+    last_seen           TIMESTAMPTZ,
+    packets             BIGINT DEFAULT 0,
+    min_consumption     DOUBLE PRECISION,
+    max_consumption     DOUBLE PRECISION,
+    last_consumption    DOUBLE PRECISION,
+    last_consumption_ts TIMESTAMPTZ
+);
+
+-- meter_source counts which dongle (source) heard which meter — the coverage
+-- matrix, maintained on ingest.
+CREATE TABLE IF NOT EXISTS meter_source (
+    endpoint_id BIGINT,
+    source      TEXT,
+    packets     BIGINT DEFAULT 0,
+    last_seen   TIMESTAMPTZ,
+    PRIMARY KEY (endpoint_id, source)
+);
+
+-- sdr_devices is the detected-dongle inventory written by capture so the UI can
+-- show every dongle (even disabled ones) with its serial/tuner/index.
+CREATE TABLE IF NOT EXISTS sdr_devices (
+    serial     TEXT PRIMARY KEY,
+    dev_index  INTEGER,
+    name       TEXT,
+    tuner      TEXT,
+    first_seen TIMESTAMPTZ,
+    last_seen  TIMESTAMPTZ
+);
 `
 
 // timescaleSteps are run one-by-one; failures are logged but non-fatal so the
@@ -83,6 +121,9 @@ var timescaleSteps = []string{
 	     start_offset => INTERVAL '3 hours',
 	     end_offset   => INTERVAL '1 minute',
 	     schedule_interval => INTERVAL '1 minute')`,
+	// real-time aggregation: union the materialized buckets with the freshest raw
+	// rows so analysis over a recent window isn't missing the last minute.
+	`ALTER MATERIALIZED VIEW readings_1m SET (timescaledb.materialized_only = false)`,
 	`ALTER TABLE readings SET (timescaledb.compress, timescaledb.compress_segmentby = 'endpoint_id')`,
 	`SELECT add_compression_policy('readings', INTERVAL '7 days')`,
 	`SELECT add_retention_policy('readings', INTERVAL '180 days')`,
@@ -112,5 +153,37 @@ func (d *DB) InitSchema(ctx context.Context) error {
 			log.Printf("[db] timescale step skipped: %v", err)
 		}
 	}
+	// One-time backfill of the registries from existing readings (a fresh deploy
+	// already has data on disk). Guarded so it only runs when empty.
+	for _, step := range backfillSteps {
+		if _, err := conn.Exec(ctx, step); err != nil {
+			log.Printf("[db] backfill step skipped: %v", err)
+		}
+	}
 	return nil
+}
+
+// backfillSteps populate the ingest-maintained registries from history exactly
+// once (each guarded by NOT EXISTS), so analysis is fast on day one.
+var backfillSteps = []string{
+	`INSERT INTO meter_index
+	   (endpoint_id, msg_type, endpoint_type, first_seen, last_seen, packets,
+	    min_consumption, max_consumption, last_consumption, last_consumption_ts)
+	 SELECT r.endpoint_id, max(r.msg_type), max(r.endpoint_type),
+	        min(r.ts), max(r.ts), count(*),
+	        min(r.consumption), max(r.consumption),
+	        (SELECT consumption FROM readings r2
+	           WHERE r2.endpoint_id = r.endpoint_id AND r2.consumption IS NOT NULL
+	           ORDER BY r2.ts DESC LIMIT 1),
+	        max(r.ts)
+	 FROM readings r
+	 WHERE r.endpoint_id IS NOT NULL
+	   AND NOT EXISTS (SELECT 1 FROM meter_index LIMIT 1)
+	 GROUP BY r.endpoint_id`,
+	`INSERT INTO meter_source (endpoint_id, source, packets, last_seen)
+	 SELECT endpoint_id, source, count(*), max(ts)
+	 FROM readings
+	 WHERE endpoint_id IS NOT NULL AND source IS NOT NULL
+	   AND NOT EXISTS (SELECT 1 FROM meter_source LIMIT 1)
+	 GROUP BY endpoint_id, source`,
 }

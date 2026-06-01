@@ -24,7 +24,11 @@ func testDB(t *testing.T) *DB {
 	if err := d.InitSchema(ctx); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	_, err = d.pool.Exec(ctx, `TRUNCATE readings, meters, test_windows, capture_heartbeat, reference_samples`)
+	// Stop the background refresh policy from materializing our fixed-date test
+	// data mid-run (TRUNCATE wouldn't clear materialized buckets). With nothing
+	// materialized, real-time aggregation always reflects current raw rows.
+	_, _ = d.pool.Exec(ctx, `SELECT delete_job(job_id) FROM timescaledb_information.jobs WHERE proc_name = 'policy_refresh_continuous_aggregate'`)
+	_, err = d.pool.Exec(ctx, `TRUNCATE readings, meters, test_windows, capture_heartbeat, reference_samples, meter_index, meter_source, sdr_devices`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -227,6 +231,74 @@ func TestMultiSeries(t *testing.T) {
 	}
 	if len(out["1001"]) == 0 || len(out["1002"]) == 0 {
 		t.Fatalf("expected series for both meters, got %v keys", len(out))
+	}
+}
+
+func TestDeleteMeterUntrackVsPurge(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	ctx := context.Background()
+	seed(t, d)
+	if _, err := d.UpdateMeter(ctx, 1001, MeterUpdate{IsMine: ptrBool(true)}); err != nil {
+		t.Fatal(err)
+	}
+
+	// untrack: annotation gone, but the meter still shows from history.
+	if err := d.DeleteMeter(ctx, 1001, false); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := d.GetMeter(ctx, 1001)
+	if m.IsMine {
+		t.Fatal("annotation should be cleared after untrack")
+	}
+	board, _ := d.Leaderboard(ctx, LeaderboardOpts{})
+	if !hasMeter(board, 1001) {
+		t.Fatal("untracked meter should still appear from history")
+	}
+
+	// purge: gone entirely.
+	if err := d.DeleteMeter(ctx, 1001, true); err != nil {
+		t.Fatal(err)
+	}
+	board, _ = d.Leaderboard(ctx, LeaderboardOpts{})
+	if hasMeter(board, 1001) {
+		t.Fatal("purged meter should be gone")
+	}
+}
+
+func hasMeter(board []model.Meter, id int64) bool {
+	for _, m := range board {
+		if m.EndpointID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAnalyticsProfilesAndCoverage(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	ctx := context.Background()
+	seed(t, d)
+
+	hod, err := d.HourlyProfile(ctx, 1001, 7)
+	if err != nil || len(hod) == 0 {
+		t.Fatalf("hourly profile empty: %v", err)
+	}
+	daily, err := d.DailyRollup(ctx, 1001, 30)
+	if err != nil || len(daily) == 0 {
+		t.Fatalf("daily rollup empty: %v", err)
+	}
+	cov, err := d.CoverageMatrix(ctx)
+	if err != nil || len(cov) == 0 {
+		t.Fatalf("coverage empty: %v", err)
+	}
+	b, err := d.BenchmarkMeter(ctx, 1001, 7)
+	if err != nil {
+		t.Fatalf("benchmark: %v", err)
+	}
+	if b.Peers < 1 || b.Yours <= 0 {
+		t.Fatalf("benchmark looks wrong: %+v", b)
 	}
 }
 

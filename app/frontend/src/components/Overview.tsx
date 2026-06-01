@@ -1,68 +1,94 @@
-import { api, Meter, useAsync } from "../api";
+import { api, useAsync, PublishedLive, Anomaly } from "../api";
 import { useLive } from "../App";
-import { fmt, shortTs } from "../util";
+import { fmt } from "../util";
+import { Card, SectionTitle, Stat, Badge, Dot, EmptyState, Button, Skeleton } from "../ui";
 
-// Overview: live cards for tracked/published meters + capture health.
-export default function Overview() {
-  const { tick } = useLive();
-  const tracked = useAsync(() => api.meters("?tracked_only=true&include_ignored=true"), "t" + tick);
+export default function Overview({ onNav }: { onNav: (v: string) => void }) {
+  const { tick, lastPower } = useLive();
+  const ov = useAsync(api.overview, "ov" + tick);
   const health = useAsync(api.health, "h" + tick);
 
-  const meters = tracked.data || [];
+  const pubs = ov.data?.published || [];
+  const anomalies = ov.data?.anomalies || [];
+  const cur = ov.data?.currency || "$";
+  const totalCost = pubs.reduce((s, p) => s + (p.cost_today || 0), 0);
+  const totalToday = pubs.filter((p) => p.commodity === "electric").reduce((s, p) => s + (p.today || 0), 0);
+
   return (
-    <div>
-      <div className="panel">
-        <h2>Capture</h2>
-        {health.data ? (
-          <div className="controls">
-            <span className="badge"><span className={"dot " + (health.data.alive ? "ok" : "bad")} />
-              {health.data.alive ? "alive" : "down"}</span>
-            <span className="badge">{health.data.unique_meters} meters seen</span>
-            <span className="badge">{health.data.packets_last_min} pkts/min</span>
-            {health.data.sources.map((s) => (
-              <span key={s.source} className="badge" title={`last ${shortTs(s.last_ts)}`}>
-                <span className={"dot " + (s.alive ? "ok" : "bad")} /> {s.source}: {s.packets_last_min}/min
-              </span>
-            ))}
-          </div>
-        ) : <span className="muted">loading…</span>}
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat label="Monitored now" tone="gold" value={lastPower != null ? `${fmt(lastPower)} W` : "–"} sub="sum of HA devices" />
+        <Stat label="Published meters" tone="brand" value={pubs.length} sub="feeding Home Assistant" />
+        <Stat label="Today (electric)" value={`${fmt(totalToday, 1)} kWh`} sub="across published" />
+        <Stat label="Est. cost today" tone="good" value={ov.data?.cost_per_kwh ? `${cur}${fmt(totalCost, 2)}` : "–"}
+          sub={ov.data?.cost_per_kwh ? `@ ${cur}${ov.data.cost_per_kwh}/kWh` : "set tariff in Settings"} />
       </div>
 
-      <h2>My meters {meters.length ? `(${meters.length})` : ""}</h2>
-      {!meters.length && (
-        <div className="panel muted">
-          No meters tracked yet. Go to <strong>Identify</strong>, switch your known load on/off,
-          and lock the meter that tracks it.
-        </div>
+      {anomalies.length > 0 && (
+        <Card className="border-bad/30">
+          <SectionTitle sub="Based on tracked meters and capture health.">Alerts</SectionTitle>
+          <div className="flex flex-wrap gap-2">{anomalies.map((a, i) => <AnomalyChip key={i} a={a} />)}</div>
+        </Card>
       )}
-      <div className="cards">
-        {meters.map((m) => <MeterCard key={m.endpoint_id} m={m} />)}
-      </div>
+
+      <Card>
+        <SectionTitle right={<Button size="sm" variant="ghost" onClick={() => onNav("identify")}>Identify →</Button>}
+          sub="Live rate, today's consumption and estimated cost for each meter you publish to Home Assistant.">
+          Your meters
+        </SectionTitle>
+        {ov.data == null ? (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-28" />)}</div>
+        ) : pubs.length === 0 ? (
+          <EmptyState>No meters published yet — find yours in <button className="text-brand underline" onClick={() => onNav("identify")}>Identify</button>, then Publish.</EmptyState>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {pubs.map((p) => <PubCard key={p.endpoint_id} p={p} currency={cur} onNav={onNav} />)}
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <SectionTitle right={<Button size="sm" variant="ghost" onClick={() => onNav("devices")}>Devices →</Button>}>Capture health</SectionTitle>
+        {!health.data ? <Skeleton className="h-10" /> : (
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={health.data.alive ? "good" : "bad"}><Dot ok={health.data.alive} /> {health.data.alive ? "receiving" : "down"}</Badge>
+            <Badge>{health.data.packets_last_min}/min</Badge>
+            <Badge>{health.data.unique_meters} meters seen</Badge>
+            <span className="mx-1 text-faint">·</span>
+            {health.data.sources.map((s) => (
+              <Badge key={s.source} tone={s.alive ? "default" : "bad"}>
+                <Dot ok={s.alive} /> <span className="mono">{s.source}</span> {s.packets_last_min}/min
+              </Badge>
+            ))}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
 
-function MeterCard({ m }: { m: Meter }) {
+function PubCard({ p, currency, onNav }: { p: PublishedLive; currency: string; onNav: (v: string) => void }) {
   return (
-    <div className="panel card">
-      <div className="card-head">
-        <strong>{m.pub_name || m.label || `Meter ${m.endpoint_id}`}</strong>
-        <span className={"chip " + (m.commodity === "electric" ? "electric" : "")}>{m.commodity}</span>
+    <button onClick={() => onNav("meters")} className="card p-4 text-left transition hover:border-borderlt">
+      <div className="flex items-center justify-between">
+        <div className="font-medium">{p.name || `meter ${p.endpoint_id}`}</div>
+        <Badge tone={p.commodity === "electric" ? "gold" : "brand"}>{p.commodity}</Badge>
       </div>
-      <div className="muted">#{m.endpoint_id} · {m.msg_type}</div>
-      <table className="kv">
-        <tbody>
-          <tr><td>latest</td><td className="num">{fmt(m.latest_consumption)}</td></tr>
-          <tr><td>movement (24h)</td><td className="num">{fmt(m.total_movement)}</td></tr>
-          <tr><td>packets/hr</td><td className="num">{fmt(m.packets_per_hour, 1)}</td></tr>
-          <tr><td>sources</td><td className="num">{m.sources}</td></tr>
-        </tbody>
-      </table>
-      <div className="card-foot">
-        {m.publish
-          ? <span className="chip electric" title={`sensor.winnow_${m.endpoint_id}_energy`}>▲ publishing to HA</span>
-          : <span className="muted">not published</span>}
+      <div className="mt-3 flex items-end gap-1">
+        <span className="text-3xl font-semibold tabular-nums text-brand">{p.rate != null ? fmt(p.rate, 2) : "–"}</span>
+        <span className="mb-1 text-sm text-muted">{p.unit || ""}/h</span>
       </div>
-    </div>
+      <div className="mt-2 flex items-center justify-between text-xs text-muted">
+        <span>today {fmt(p.today, 2)} {p.unit}</span>
+        {p.cost_today > 0 && <span className="text-good">{currency}{fmt(p.cost_today, 2)}</span>}
+      </div>
+      <div className="mono mt-1 text-[11px] text-faint">#{p.endpoint_id}</div>
+    </button>
   );
+}
+
+function AnomalyChip({ a }: { a: Anomaly }) {
+  const label = a.kind === "dropout" ? "Dropout" : a.kind === "stuck" ? "Stuck" : "Source down";
+  const who = a.source ? a.source : a.endpoint_id ? `#${a.endpoint_id}` : "";
+  return <Badge tone="bad" className="whitespace-normal"><strong>{label}</strong> <span className="mono">{who}</span> <span className="text-muted">— {a.detail.replace(/[TZ]/g, " ").trim()}</span></Badge>;
 }

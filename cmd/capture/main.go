@@ -35,19 +35,165 @@ func main() {
 		log.Printf("[capture] schema init: %v (continuing)", err)
 	}
 
-	var wg sync.WaitGroup
 	if *mock {
+		var wg sync.WaitGroup
 		for _, src := range []string{"mock-0", "mock-1"} {
 			wg.Add(1)
 			go func(s string) { defer wg.Done(); superviseMock(ctx, database, s) }(src)
 		}
-	} else {
-		for i, dev := range resolveDevices(ctx) {
-			wg.Add(1)
-			go func(dev sdrDevice, port int) { defer wg.Done(); superviseSDR(ctx, database, dev, port) }(dev, 1234+i)
+		wg.Wait()
+		return
+	}
+	// Live mode: a manager owns one supervisor per enabled dongle and reconciles
+	// the running set whenever scan settings or the device selection change
+	// (Postgres LISTEN), or a dongle is hot-plugged (periodic re-enumerate).
+	(&manager{d: database, running: map[string]*runningDev{}}).run(ctx)
+}
+
+// scanParams is the effective tuning for one dongle. It's comparable so a change
+// is detected with ==.
+type scanParams struct {
+	devIndex                        int
+	freq, gain, ppm, msgtype, filt  string
+}
+
+type runningDev struct {
+	cancel context.CancelFunc
+	params scanParams
+	done   chan struct{}
+}
+
+type manager struct {
+	d         *db.DB
+	running   map[string]*runningDev
+	inventory []sdrDevice // enumerated once, while devices are free
+}
+
+// run enumerates dongles once (rtl_test needs exclusive access, so we can't
+// re-run it while receivers hold the devices), then reconciles on startup, on
+// config NOTIFYs, and on a periodic tick — all against the cached inventory.
+func (m *manager) run(ctx context.Context) {
+	notify := m.listenConfig(ctx)
+	m.inventory = m.enumerateOnce(ctx)
+	m.reconcile(ctx)
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			m.stopAll()
+			return
+		case <-ticker.C:
+			m.reconcile(ctx)
+		case <-notify:
+			log.Printf("[capture] config changed; reconciling devices")
+			m.reconcile(ctx)
 		}
 	}
-	wg.Wait()
+}
+
+// enumerateOnce probes for dongles (retrying until some appear) and records the
+// inventory. Done before any receiver starts, so serials read reliably.
+func (m *manager) enumerateOnce(ctx context.Context) []sdrDevice {
+	for ctx.Err() == nil {
+		devs := enumerateRTL(ctx)
+		if len(devs) > 0 {
+			log.Printf("[capture] detected %d SDR(s): %s", len(devs), describe(devs))
+			for _, dev := range devs {
+				_ = m.d.UpsertDevice(ctx, dev.source, dev.index, dev.name, dev.tuner)
+			}
+			return devs
+		}
+		log.Printf("[capture] no SDRs detected; retrying in 5s")
+		if !sleepCtx(ctx, 5*time.Second) {
+			return nil
+		}
+	}
+	return nil
+}
+
+// reconcile starts/stops/restarts supervisors so the running set matches the
+// enabled+configured desired set derived from the cached inventory + DB config.
+func (m *manager) reconcile(ctx context.Context) {
+	cfg, err := m.d.LoadConfig(ctx)
+	if err != nil {
+		log.Printf("[capture] load config: %v", err)
+		return
+	}
+	desired := map[string]scanParams{}
+	for _, dev := range m.inventory {
+		if !cfg.Capture.DeviceEnabled(dev.source) {
+			continue
+		}
+		desired[dev.source] = scanParams{
+			devIndex: dev.index,
+			freq:     cfg.Capture.Freq,
+			gain:     cfg.Capture.DeviceGain(dev.source),
+			ppm:      cfg.Capture.PPM,
+			msgtype:  cfg.Capture.MsgType,
+			filt:     cfg.Capture.FilterID,
+		}
+	}
+	// stop devices that vanished, got disabled, or whose params changed
+	for src, rd := range m.running {
+		if want, ok := desired[src]; !ok || want != rd.params {
+			log.Printf("[capture] stopping source=%s", src)
+			rd.cancel()
+			<-rd.done
+			delete(m.running, src)
+		}
+	}
+	// start devices that should be running but aren't
+	for src, want := range desired {
+		if _, ok := m.running[src]; ok {
+			continue
+		}
+		dctx, dcancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		m.running[src] = &runningDev{cancel: dcancel, params: want, done: done}
+		go func(src string, p scanParams) {
+			defer close(done)
+			superviseSDR(dctx, m.d, src, p)
+		}(src, want)
+	}
+}
+
+func (m *manager) stopAll() {
+	for src, rd := range m.running {
+		rd.cancel()
+		<-rd.done
+		delete(m.running, src)
+	}
+}
+
+// listenConfig opens a dedicated LISTEN connection and signals on winnow_config.
+func (m *manager) listenConfig(ctx context.Context) <-chan struct{} {
+	ch := make(chan struct{}, 1)
+	go func() {
+		for ctx.Err() == nil {
+			conn, err := m.d.Pool().Acquire(ctx)
+			if err != nil {
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			if _, err := conn.Exec(ctx, "LISTEN winnow_config"); err != nil {
+				conn.Release()
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			for ctx.Err() == nil {
+				if _, err := conn.Conn().WaitForNotification(ctx); err != nil {
+					break
+				}
+				select {
+				case ch <- struct{}{}:
+				default:
+				}
+			}
+			conn.Release()
+		}
+	}()
+	return ch
 }
 
 func mustDB(ctx context.Context) *db.DB {
@@ -63,56 +209,80 @@ func mustDB(ctx context.Context) *db.DB {
 	return nil
 }
 
-// superviseSDR runs rtl_tcp + rtlamr for one device, restarting on failure.
-// rtl_tcp is addressed by the device's current index; readings are tagged with
-// its stable source id (serial when unique).
-func superviseSDR(ctx context.Context, d *db.DB, dev sdrDevice, port int) {
-	freq := env("FREQ", "912600155")
-	msgtype := env("RTLAMR_MSGTYPE", "scm,scm+,idm")
-	filterID := env("RTLAMR_FILTERID", "")
-	gain := env("GAIN", "")
-	ppm := env("PPM", "0")
+// superviseSDR runs rtl_tcp + rtlamr for one device with the given scan params,
+// restarting on failure until ctx is cancelled. rtl_tcp is addressed by the
+// device's current index; readings are tagged with its stable source id.
+func superviseSDR(ctx context.Context, d *db.DB, source string, p scanParams) {
+	port := 1234 + p.devIndex
 	server := "127.0.0.1:" + itoa(port)
-	devIdx := itoa(dev.index)
+	devIdx := itoa(p.devIndex)
+	ppm := p.ppm
+	if ppm == "" {
+		ppm = "0"
+	}
+	freq := p.freq
+	if freq == "" {
+		freq = "912600155"
+	}
+	msgtype := p.msgtype
+	if msgtype == "" {
+		msgtype = "scm,scm+,idm"
+	}
 
 	for ctx.Err() == nil {
-		log.Printf("[capture] source=%s (dev %s) starting rtl_tcp on %s", dev.source, devIdx, server)
+		log.Printf("[capture] source=%s (dev %s) starting rtl_tcp on %s (freq=%s gain=%s)", source, devIdx, server, freq, p.gain)
 		tcpArgs := []string{"-d", devIdx, "-a", "127.0.0.1", "-p", itoa(port), "-P", ppm}
-		if gain != "" {
-			tcpArgs = append(tcpArgs, "-g", gain)
+		if p.gain != "" {
+			tcpArgs = append(tcpArgs, "-g", p.gain)
 		}
 		tcp := exec.CommandContext(ctx, "rtl_tcp", tcpArgs...)
-		tcp.Stderr = prefixWriter("rtl_tcp:" + dev.source)
+		tcp.Stderr = prefixWriter("rtl_tcp:" + source)
 		if err := tcp.Start(); err != nil {
-			log.Printf("[capture] source=%s rtl_tcp start: %v", dev.source, err)
-			time.Sleep(5 * time.Second)
+			log.Printf("[capture] source=%s rtl_tcp start: %v", source, err)
+			if !sleepCtx(ctx, 5*time.Second) {
+				return
+			}
 			continue
 		}
 		time.Sleep(2 * time.Second) // let rtl_tcp bind the device
 
 		amrArgs := []string{"-server=" + server, "-msgtype=" + msgtype, "-format=json", "-centerfreq=" + freq}
-		if filterID != "" {
-			amrArgs = append(amrArgs, "-filterid="+filterID)
+		if p.filt != "" {
+			amrArgs = append(amrArgs, "-filterid="+p.filt)
 		}
 		amr := exec.CommandContext(ctx, "rtlamr", amrArgs...)
-		amr.Stderr = prefixWriter("rtlamr:" + dev.source)
+		amr.Stderr = prefixWriter("rtlamr:" + source)
 		stdout, _ := amr.StdoutPipe()
 		if err := amr.Start(); err != nil {
-			log.Printf("[capture] source=%s rtlamr start: %v", dev.source, err)
+			log.Printf("[capture] source=%s rtlamr start: %v", source, err)
 			_ = tcp.Process.Kill()
-			time.Sleep(5 * time.Second)
+			if !sleepCtx(ctx, 5*time.Second) {
+				return
+			}
 			continue
 		}
-		ingest(ctx, d, dev.source, stdout)
+		ingest(ctx, d, source, stdout)
 
 		_ = amr.Wait()
 		_ = tcp.Process.Kill()
 		_ = tcp.Wait()
-		log.Printf("[capture] source=%s pipeline exited; restarting in 5s", dev.source)
-		select {
-		case <-ctx.Done():
-		case <-time.After(5 * time.Second):
+		if ctx.Err() != nil {
+			return
 		}
+		log.Printf("[capture] source=%s pipeline exited; restarting in 5s", source)
+		if !sleepCtx(ctx, 5*time.Second) {
+			return
+		}
+	}
+}
+
+// sleepCtx sleeps for d unless ctx is cancelled first; returns false if cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
 	}
 }
 

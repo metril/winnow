@@ -20,43 +20,46 @@ type LeaderboardOpts struct {
 	PublishedOnly  bool
 }
 
-// Leaderboard returns per-meter summaries joined with annotations.
+// Leaderboard returns per-meter summaries joined with annotations. Windowed
+// stats come from the readings_1m continuous aggregate; metadata and all-time
+// latest from the meter_index registry — so it never scans raw readings.
 func (d *DB) Leaderboard(ctx context.Context, o LeaderboardOpts) ([]model.Meter, error) {
-	where := "WHERE r.consumption IS NOT NULL AND r.endpoint_id IS NOT NULL"
+	where := "WHERE TRUE"
 	args := []any{}
 	add := func(cond string, v any) {
 		args = append(args, v)
 		where += fmt.Sprintf(" AND %s$%d", cond, len(args))
 	}
 	if o.Since != nil {
-		add("r.ts >= ", *o.Since)
+		add("w.bucket >= ", *o.Since)
 	}
 	if o.Until != nil {
-		add("r.ts <= ", *o.Until)
-	}
-	if o.MsgType != "" {
-		add("r.msg_type = ", o.MsgType)
+		add("w.bucket <= ", *o.Until)
 	}
 
 	q := `
-SELECT r.endpoint_id,
-       max(r.msg_type)                       AS msg_type,
-       max(r.endpoint_type)                  AS endpoint_type,
-       count(*)                              AS packets,
-       count(DISTINCT r.source)              AS sources,
-       min(r.ts)                             AS first_seen,
-       max(r.ts)                             AS last_seen,
-       max(r.consumption)-min(r.consumption) AS total_movement,
-       (SELECT consumption FROM readings r2
-          WHERE r2.endpoint_id = r.endpoint_id AND r2.consumption IS NOT NULL
-          ORDER BY r2.ts DESC LIMIT 1)        AS latest_consumption,
+WITH win AS (
+  SELECT endpoint_id,
+         sum(n)                AS packets,
+         min(bucket)           AS first_seen,
+         max(bucket)           AS last_seen,
+         max(max_c)-min(min_c) AS total_movement
+  FROM readings_1m w
+  ` + where + `
+  GROUP BY endpoint_id)
+SELECT win.endpoint_id, i.msg_type, i.endpoint_type,
+       win.packets,
+       COALESCE((SELECT count(*) FROM meter_source ms WHERE ms.endpoint_id = win.endpoint_id), 0) AS sources,
+       win.first_seen, win.last_seen, win.total_movement, i.last_consumption,
        m.label, m.notes, m.is_candidate, m.is_mine, m.ignored, m.publish,
        m.pub_name, m.pub_multiplier, m.pub_unit
-FROM readings r
-LEFT JOIN meters m ON m.endpoint_id = r.endpoint_id
-` + where + `
-GROUP BY r.endpoint_id, m.label, m.notes, m.is_candidate, m.is_mine, m.ignored,
-         m.publish, m.pub_name, m.pub_multiplier, m.pub_unit`
+FROM win
+JOIN meter_index i ON i.endpoint_id = win.endpoint_id
+LEFT JOIN meters m ON m.endpoint_id = win.endpoint_id`
+	if o.MsgType != "" {
+		args = append(args, o.MsgType)
+		q += fmt.Sprintf(" WHERE i.msg_type = $%d", len(args))
+	}
 
 	rows, err := d.pool.Query(ctx, q, args...)
 	if err != nil {
@@ -186,6 +189,27 @@ func (d *DB) UpdateMeter(ctx context.Context, id int64, f MeterUpdate) (model.Me
 		}
 	}
 	return d.GetMeter(ctx, id)
+}
+
+// DeleteMeter removes a meter's annotation row (untrack). When purge is true it
+// also deletes all stored readings and registry rows for the endpoint, so the
+// meter disappears entirely (it reappears only if it broadcasts again).
+func (d *DB) DeleteMeter(ctx context.Context, id int64, purge bool) error {
+	if _, err := d.pool.Exec(ctx, `DELETE FROM meters WHERE endpoint_id=$1`, id); err != nil {
+		return err
+	}
+	if purge {
+		for _, q := range []string{
+			`DELETE FROM readings WHERE endpoint_id=$1`,
+			`DELETE FROM meter_index WHERE endpoint_id=$1`,
+			`DELETE FROM meter_source WHERE endpoint_id=$1`,
+		} {
+			if _, err := d.pool.Exec(ctx, q, id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // MeterUpdate carries optional annotation/flag changes (nil = unchanged).

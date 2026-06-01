@@ -69,9 +69,17 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/meters", s.handleMeters)
 	mux.HandleFunc("GET /api/meters/{id}", s.handleMeterDetail)
 	mux.HandleFunc("PATCH /api/meters/{id}", s.handleMeterPatch)
+	mux.HandleFunc("DELETE /api/meters/{id}", s.handleDeleteMeter)
 	mux.HandleFunc("GET /api/meters/{id}/filter-command", s.handleFilterCommand)
 	mux.HandleFunc("GET /api/meters/{id}/export.csv", s.handleExportCSV)
+	mux.HandleFunc("GET /api/meters/{id}/profile", s.handleProfile)
+	mux.HandleFunc("GET /api/meters/{id}/benchmark", s.handleBenchmark)
 	mux.HandleFunc("GET /api/series", s.handleSeries)
+
+	mux.HandleFunc("GET /api/overview", s.handleOverview)
+	mux.HandleFunc("GET /api/anomalies", s.handleAnomalies)
+	mux.HandleFunc("GET /api/diagnostics/coverage", s.handleCoverage)
+	mux.HandleFunc("GET /api/diagnostics/sources", s.handleSourceTimeline)
 
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
@@ -79,6 +87,9 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/integrations/status", s.handleIntegrationsStatus)
 	mux.HandleFunc("GET /api/ha/power-entities", s.handlePowerEntities)
 	mux.HandleFunc("POST /api/ha/create-helper", s.handleCreateHelper)
+
+	mux.HandleFunc("GET /api/devices", s.handleDevices)
+	mux.HandleFunc("PUT /api/devices/{serial}", s.handlePutDevice)
 
 	mux.HandleFunc("GET /api/identify", s.handleIdentify)
 	mux.HandleFunc("GET /api/identify/auto", s.handleIdentifyAuto)

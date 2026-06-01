@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -21,6 +22,11 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func badReq(w http.ResponseWriter, msg string) { http.Error(w, msg, http.StatusBadRequest) }
+
+func round(v float64, places int) float64 {
+	p := math.Pow(10, float64(places))
+	return math.Round(v*p) / p
+}
 
 func pathID(r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -161,6 +167,23 @@ func (s *server) handleMeterPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.d.NotifyConfig(r.Context()) // worker refreshes its publish set
 	writeJSON(w, m)
+}
+
+// handleDeleteMeter removes a meter's annotation (untrack). With ?purge=true it
+// also deletes the meter's stored readings and registry rows.
+func (s *server) handleDeleteMeter(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		badReq(w, "bad id")
+		return
+	}
+	purge := r.URL.Query().Get("purge") == "true"
+	if err := s.d.DeleteMeter(r.Context(), id, purge); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	_ = s.d.NotifyConfig(r.Context()) // worker drops it from its publish set
+	writeJSON(w, map[string]any{"ok": true, "purged": purge})
 }
 
 func (s *server) handleFilterCommand(w http.ResponseWriter, r *http.Request) {
@@ -390,6 +413,59 @@ func (s *server) handleCreateHelper(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "entity_id": entityID})
 }
 
+// --- devices & scan settings ------------------------------------------------
+
+func (s *server) handleDevices(w http.ResponseWriter, r *http.Request) {
+	cfg, _ := s.d.LoadConfig(r.Context())
+	devs, err := s.d.ListDevices(r.Context(), 60*time.Second)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	for i := range devs {
+		devs[i].Enabled = cfg.Capture.DeviceEnabled(devs[i].Serial)
+		devs[i].Gain = cfg.Capture.DeviceGain(devs[i].Serial)
+		if dc, ok := cfg.Capture.Devices[devs[i].Serial]; ok {
+			devs[i].Label = dc.Label
+		}
+	}
+	writeJSON(w, map[string]any{
+		"devices": devs,
+		"scan": map[string]any{
+			"freq": cfg.Capture.Freq, "gain": cfg.Capture.Gain, "ppm": cfg.Capture.PPM,
+			"msgtype": cfg.Capture.MsgType, "filterid": cfg.Capture.FilterID,
+		},
+	})
+}
+
+// handlePutDevice updates one dongle's enable/gain/label in the capture_devices
+// map and NOTIFYs capture to hot-apply it.
+func (s *server) handlePutDevice(w http.ResponseWriter, r *http.Request) {
+	serial := r.PathValue("serial")
+	if serial == "" {
+		badReq(w, "bad serial")
+		return
+	}
+	var body config.DeviceConfig
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		badReq(w, "bad json")
+		return
+	}
+	cfg, _ := s.d.LoadConfig(r.Context())
+	devices := cfg.Capture.Devices
+	if devices == nil {
+		devices = map[string]config.DeviceConfig{}
+	}
+	devices[serial] = body
+	blob, _ := json.Marshal(devices)
+	if err := s.d.SetSetting(r.Context(), config.KeyCaptureDevices, string(blob)); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	_ = s.d.NotifyConfig(r.Context())
+	writeJSON(w, map[string]any{"ok": true})
+}
+
 // --- identify ---------------------------------------------------------------
 
 func (s *server) handleIdentify(w http.ResponseWriter, r *http.Request) {
@@ -439,6 +515,135 @@ func (s *server) handleReferenceSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, out)
+}
+
+// --- analytics --------------------------------------------------------------
+
+func intParam(r *http.Request, key string, def int) int {
+	if v := r.URL.Query().Get(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func (s *server) handleProfile(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		badReq(w, "bad id")
+		return
+	}
+	days := intParam(r, "days", 14)
+	var (
+		out any
+		err error
+	)
+	switch r.URL.Query().Get("type") {
+	case "dow":
+		out, err = s.d.DowProfile(r.Context(), id, days)
+	case "daily":
+		out, err = s.d.DailyRollup(r.Context(), id, days)
+	case "heatmap":
+		out, err = s.d.Heatmap(r.Context(), id, days)
+	default: // "hod"
+		out, err = s.d.HourlyProfile(r.Context(), id, days)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, out)
+}
+
+func (s *server) handleBenchmark(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		badReq(w, "bad id")
+		return
+	}
+	b, err := s.d.BenchmarkMeter(r.Context(), id, intParam(r, "days", 7))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, b)
+}
+
+func (s *server) handleCoverage(w http.ResponseWriter, r *http.Request) {
+	cells, err := s.d.CoverageMatrix(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, cells)
+}
+
+func (s *server) handleSourceTimeline(w http.ResponseWriter, r *http.Request) {
+	since := timeParam(r, "since", time.Now().Add(-6*time.Hour))
+	bucket := r.URL.Query().Get("bucket")
+	if bucket == "" {
+		bucket = "5m"
+	}
+	out, err := s.d.SourceTimeline(r.Context(), *since, bucket)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, out)
+}
+
+func (s *server) handleAnomalies(w http.ResponseWriter, r *http.Request) {
+	a, err := s.d.Anomalies(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, a)
+}
+
+// handleOverview is the glanceable dashboard payload: each published meter with
+// its live rate, today's consumption and estimated cost, plus anomalies.
+func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
+	cfg, _ := s.d.LoadConfig(r.Context())
+	pubs, _ := s.d.MetersForPublish(r.Context())
+	midnight := time.Now().UTC().Truncate(24 * time.Hour)
+	type pubRow struct {
+		EndpointID int64    `json:"endpoint_id"`
+		Name       string   `json:"name"`
+		Commodity  string   `json:"commodity"`
+		Unit       string   `json:"unit"`
+		Multiplier float64  `json:"multiplier"`
+		Rate       *float64 `json:"rate"`       // current units/hour (×multiplier)
+		TodayValue float64  `json:"today"`      // consumption since midnight (×multiplier)
+		CostToday  float64  `json:"cost_today"` // electric only
+	}
+	rowsOut := []pubRow{}
+	for _, m := range pubs {
+		row := pubRow{EndpointID: m.EndpointID, Commodity: m.Commodity, Multiplier: m.PubMultiplier}
+		if m.PubName != nil {
+			row.Name = *m.PubName
+		}
+		if m.PubUnit != nil {
+			row.Unit = *m.PubUnit
+		}
+		row.TodayValue = round(s.d.MovementSince(r.Context(), m.EndpointID, midnight)*m.PubMultiplier, 3)
+		if v, ok := s.d.DerivedPower(r.Context(), m.EndpointID, m.PubMultiplier); ok {
+			v = round(v, 3)
+			row.Rate = &v
+		}
+		if m.Commodity == "electric" && cfg.CostPerKwh > 0 {
+			row.CostToday = round(row.TodayValue*cfg.CostPerKwh, 2)
+		}
+		rowsOut = append(rowsOut, row)
+	}
+	anomalies, _ := s.d.Anomalies(r.Context())
+	writeJSON(w, map[string]any{
+		"currency":     cfg.Currency,
+		"cost_per_kwh": cfg.CostPerKwh,
+		"published":    rowsOut,
+		"anomalies":    anomalies,
+	})
 }
 
 // --- test windows -----------------------------------------------------------

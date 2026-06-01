@@ -63,6 +63,31 @@ export interface Status {
 
 export interface PowerEntity { entity_id: string; name: string; state: string; unit: string; kind: string; }
 
+export interface Device {
+  serial: string; dev_index: number; name: string; tuner: string;
+  last_seen: string | null; enabled: boolean; gain: string; label: string;
+  alive: boolean; packets_last_min: number; meters_heard: number; age_seconds: number | null;
+}
+export interface ScanSettings { freq: string; gain: string; ppm: string; msgtype: string; filterid: string; }
+export interface DevicesResp { devices: Device[]; scan: ScanSettings; }
+
+export interface Anomaly { kind: string; endpoint_id?: number; source?: string; detail: string; }
+export interface PublishedLive {
+  endpoint_id: number; name: string; commodity: string; unit: string;
+  multiplier: number; rate: number | null; today: number; cost_today: number;
+}
+export interface Overview {
+  currency: string; cost_per_kwh: number; published: PublishedLive[]; anomalies: Anomaly[];
+}
+export interface Benchmark {
+  endpoint_id: number; commodity: string; days: number;
+  yours: number; median: number; percentile: number; peers: number;
+}
+export interface CoverageCell { source: string; endpoint_id: number; packets: number; last_seen: string; }
+export interface ProfilePoint { key: number; value: number; }
+export interface HeatCell { dow: number; hour: number; value: number; }
+export interface DailyPoint { day: string; value: number; }
+
 async function j<T>(url: string, opts?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
@@ -76,7 +101,12 @@ export const api = {
   meter: (id: number, qs: string) => j<any>(`/api/meters/${id}${qs}`),
   patchMeter: (id: number, body: any) =>
     j<Meter>(`/api/meters/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteMeter: (id: number, purge: boolean) =>
+    j<any>(`/api/meters/${id}${purge ? "?purge=true" : ""}`, { method: "DELETE" }),
   filterCmd: (id: number) => j<any>(`/api/meters/${id}/filter-command`),
+  profile: (id: number, type: string, days = 14) =>
+    j<any>(`/api/meters/${id}/profile?type=${type}&days=${days}`),
+  benchmark: (id: number, days = 7) => j<Benchmark>(`/api/meters/${id}/benchmark?days=${days}`),
   series: (ids: number[], qs: string) =>
     j<Record<string, { bucket: string; value: number }[]>>(`/api/series?ids=${ids.join(",")}&${qs}`),
 
@@ -88,6 +118,15 @@ export const api = {
   powerEntities: () => j<PowerEntity[]>("/api/ha/power-entities"),
   createHelper: (name: string, entities: string[]) =>
     j<any>("/api/ha/create-helper", { method: "POST", body: JSON.stringify({ name, entities }) }),
+
+  devices: () => j<DevicesResp>("/api/devices"),
+  putDevice: (serial: string, body: { enabled?: boolean; gain?: string; label?: string }) =>
+    j<any>(`/api/devices/${encodeURIComponent(serial)}`, { method: "PUT", body: JSON.stringify(body) }),
+
+  overview: () => j<Overview>("/api/overview"),
+  anomalies: () => j<Anomaly[]>("/api/anomalies"),
+  coverage: () => j<CoverageCell[]>("/api/diagnostics/coverage"),
+  sourceTimeline: (qs = "") => j<Record<string, { bucket: string; packets: number }[]>>(`/api/diagnostics/sources${qs}`),
 
   identify: (hours: number) => j<any>(`/api/identify?hours=${hours}`),
   identifyAuto: () => j<any>("/api/identify/auto"),

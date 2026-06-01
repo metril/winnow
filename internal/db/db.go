@@ -45,6 +45,8 @@ func iso(t *time.Time) *string {
 // --- readings & heartbeat (writers: capture) --------------------------------
 
 // InsertReading stores one reading and NOTIFYs listeners with the endpoint id.
+// It also maintains the small per-meter registries (meter_index, meter_source)
+// so reads never scan raw readings just for metadata.
 func (d *DB) InsertReading(ctx context.Context, r model.Reading, raw string) error {
 	_, err := d.pool.Exec(ctx,
 		`INSERT INTO readings (ts, msg_type, endpoint_id, endpoint_type, consumption, raw, source)
@@ -53,9 +55,102 @@ func (d *DB) InsertReading(ctx context.Context, r model.Reading, raw string) err
 	if err != nil {
 		return err
 	}
+	// Maintain registries. LEAST/GREATEST ignore NULLs, so a packet with no
+	// consumption (e.g. an IDM differential) won't clobber the min/max.
+	_, _ = d.pool.Exec(ctx, `
+INSERT INTO meter_index
+  (endpoint_id, msg_type, endpoint_type, first_seen, last_seen, packets,
+   min_consumption, max_consumption, last_consumption, last_consumption_ts)
+VALUES ($1,$2,$3,$4,$4,1,$5,$5,$5,$4)
+ON CONFLICT (endpoint_id) DO UPDATE SET
+  msg_type        = COALESCE(EXCLUDED.msg_type, meter_index.msg_type),
+  endpoint_type   = COALESCE(EXCLUDED.endpoint_type, meter_index.endpoint_type),
+  last_seen       = GREATEST(meter_index.last_seen, EXCLUDED.last_seen),
+  packets         = meter_index.packets + 1,
+  min_consumption = LEAST(meter_index.min_consumption, EXCLUDED.min_consumption),
+  max_consumption = GREATEST(meter_index.max_consumption, EXCLUDED.max_consumption),
+  last_consumption = CASE WHEN EXCLUDED.last_consumption IS NOT NULL
+                          AND EXCLUDED.last_consumption_ts >= meter_index.last_consumption_ts
+                          THEN EXCLUDED.last_consumption ELSE meter_index.last_consumption END,
+  last_consumption_ts = GREATEST(meter_index.last_consumption_ts, EXCLUDED.last_consumption_ts)`,
+		r.EndpointID, r.MsgType, r.EndpointType, r.TS, r.Consumption)
+	if r.Source != "" {
+		_, _ = d.pool.Exec(ctx, `
+INSERT INTO meter_source (endpoint_id, source, packets, last_seen)
+VALUES ($1,$2,1,$3)
+ON CONFLICT (endpoint_id, source) DO UPDATE SET
+  packets = meter_source.packets + 1,
+  last_seen = GREATEST(meter_source.last_seen, EXCLUDED.last_seen)`,
+			r.EndpointID, r.Source, r.TS)
+	}
 	// pg_notify payload is the endpoint id; cheap, broadcast to all listeners.
 	_, _ = d.pool.Exec(ctx, `SELECT pg_notify('winnow', $1)`, strconv.FormatInt(r.EndpointID, 10))
 	return nil
+}
+
+// UpsertDevice records a detected SDR dongle in the inventory.
+func (d *DB) UpsertDevice(ctx context.Context, serial string, idx int, name, tuner string) error {
+	_, err := d.pool.Exec(ctx, `
+INSERT INTO sdr_devices (serial, dev_index, name, tuner, first_seen, last_seen)
+VALUES ($1,$2,$3,$4, now(), now())
+ON CONFLICT (serial) DO UPDATE SET
+  dev_index=EXCLUDED.dev_index, name=EXCLUDED.name, tuner=EXCLUDED.tuner, last_seen=now()`,
+		serial, idx, name, tuner)
+	return err
+}
+
+// Device is one detected SDR dongle joined with live capture health.
+type Device struct {
+	Serial         string   `json:"serial"`
+	DevIndex       int      `json:"dev_index"`
+	Name           string   `json:"name"`
+	Tuner          string   `json:"tuner"`
+	LastSeen       *string  `json:"last_seen"`
+	Enabled        bool     `json:"enabled"`
+	Gain           string   `json:"gain"`
+	Label          string   `json:"label"`
+	Alive          bool     `json:"alive"`
+	PacketsLastMin int64    `json:"packets_last_min"`
+	MetersHeard    int64    `json:"meters_heard"`
+	AgeSeconds     *float64 `json:"age_seconds"`
+}
+
+// ListDevices returns the SDR inventory joined with heartbeat liveness and the
+// number of distinct meters each has heard. Per-device enable/gain/label come
+// from caller-supplied config (stored in settings).
+func (d *DB) ListDevices(ctx context.Context, staleAfter time.Duration) ([]Device, error) {
+	rows, err := d.pool.Query(ctx, `
+SELECT s.serial, s.dev_index, s.name, s.tuner, s.last_seen,
+       hb.updated_at,
+       COALESCE((SELECT count(*) FROM readings r
+                 WHERE r.source = s.serial AND r.ts >= now() - interval '1 minute'), 0) AS ppm,
+       COALESCE((SELECT count(DISTINCT endpoint_id) FROM meter_source ms
+                 WHERE ms.source = s.serial), 0) AS heard
+FROM sdr_devices s
+LEFT JOIN capture_heartbeat hb ON hb.source = s.serial
+ORDER BY s.dev_index`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	now := time.Now().UTC()
+	out := []Device{}
+	for rows.Next() {
+		var dev Device
+		var lastSeen, updated *time.Time
+		if err := rows.Scan(&dev.Serial, &dev.DevIndex, &dev.Name, &dev.Tuner,
+			&lastSeen, &updated, &dev.PacketsLastMin, &dev.MetersHeard); err != nil {
+			return nil, err
+		}
+		dev.LastSeen = iso(lastSeen)
+		if updated != nil {
+			age := now.Sub(*updated).Seconds()
+			dev.AgeSeconds = &age
+			dev.Alive = age <= staleAfter.Seconds()
+		}
+		out = append(out, dev)
+	}
+	return out, rows.Err()
 }
 
 func (d *DB) UpdateHeartbeat(ctx context.Context, source string, lastTS time.Time, total int64) error {
