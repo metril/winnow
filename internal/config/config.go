@@ -25,6 +25,7 @@ const (
 	// pre-aggregated sensor (power or energy/utility_meter); many = winnow sums.
 	KeyMonitoredEntities = "monitored_entities"
 	KeyThresholdW        = "threshold_w"
+	KeyAutoWindow        = "auto_window"
 	KeyDefaultMultiplier = "default_multiplier"
 	KeyDefaultUnit       = "default_unit"
 
@@ -56,7 +57,8 @@ type Config struct {
 	MQTTPass          string
 	MQTTPrefix        string
 	MonitoredEntities []string
-	ThresholdW        float64
+	ThresholdW        float64 // watts above the rolling baseline that opens an auto window
+	AutoWindow        bool    // opt-in: auto-detect appliance spikes into test windows
 	DefaultMultiplier float64
 	DefaultUnit       string
 	Capture           CaptureConfig
@@ -163,6 +165,7 @@ func FromMap(m map[string]string) Config {
 		port = 1883
 	}
 	thr, _ := strconv.ParseFloat(get(KeyThresholdW, "", "50"), 64)
+	autoWin := get(KeyAutoWindow, "", "0"); autoOn := autoWin == "1" || strings.EqualFold(autoWin, "true")
 	mult, _ := strconv.ParseFloat(get(KeyDefaultMultiplier, "", "1"), 64)
 	if mult == 0 {
 		mult = 1
@@ -186,6 +189,7 @@ func FromMap(m map[string]string) Config {
 		MQTTPrefix:        get(KeyMQTTPrefix, "MQTT_PREFIX", "homeassistant"),
 		MonitoredEntities: parseEntities(get(KeyMonitoredEntities, "", "")),
 		ThresholdW:        thr,
+		AutoWindow:        autoOn,
 		DefaultMultiplier: mult,
 		DefaultUnit:       get(KeyDefaultUnit, "", ""),
 		Capture:           capture,

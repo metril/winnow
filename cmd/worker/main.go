@@ -31,6 +31,18 @@ type worker struct {
 	publishSet map[int64]model.Meter // meters to publish, by id
 
 	haRestart chan struct{} // signal the HA loop to reconnect with new cfg
+
+	aw autoState // auto-window detector state (touched only by the single-threaded HA callback)
+}
+
+// autoState is the live state of the baseline-relative auto-window detector.
+type autoState struct {
+	inited       bool
+	baseline     float64   // rolling estimate of idle (always-on) power, W
+	open         bool      // an auto window is currently open
+	openID       int64     // its test_windows id
+	openedAt     time.Time // when it opened (for the max-duration cap)
+	lastClosedAt time.Time // when the last one closed (for the cooldown)
 }
 
 func main() {
@@ -198,10 +210,11 @@ func (w *worker) haLoop(ctx context.Context) {
 		}
 
 		entities := cfg.MonitoredEntities
-		threshold := cfg.ThresholdW
+		openDelta := cfg.ThresholdW
+		autoOn := cfg.AutoWindow
 		client := ha.New(cfg.HAURL, cfg.HAToken)
 		info := buildEntityInfo(ctx, client, entities)
-		log.Printf("[worker] HA WS subscribing to %d monitored entit(ies); threshold %.0fW", len(entities), threshold)
+		log.Printf("[worker] HA WS subscribing to %d monitored entit(ies); auto-window=%v (Δ%.0fW)", len(entities), autoOn, openDelta)
 
 		// per-subscription normalization state (callback is single-threaded)
 		lastPower := map[string]float64{}
@@ -261,7 +274,7 @@ func (w *worker) haLoop(ctx context.Context) {
 				agg += v
 			}
 			w.d.NotifyReference(subCtx, agg)
-			w.autoWindow(subCtx, agg, threshold)
+			w.autoWindow(subCtx, agg, openDelta, autoOn)
 		})
 		cancel()
 		if err != nil && ctx.Err() == nil {
@@ -310,15 +323,68 @@ func unitFactor(kind, unit string) float64 {
 	}
 }
 
-// autoWindow opens/closes a source='auto' test window on threshold crossings.
-func (w *worker) autoWindow(ctx context.Context, power, threshold float64) {
-	open, isOpen := w.d.OpenWindow(ctx, "auto")
-	if power >= threshold && !isOpen {
-		_, _ = w.d.CreateTest(ctx, "auto load "+time.Now().UTC().Format("15:04"), time.Now().UTC(), nil, "auto")
-		log.Printf("[worker] auto window opened (%.0fW ≥ %.0fW)", power, threshold)
-	} else if power < threshold && isOpen {
-		_, _ = w.d.StopTest(ctx, open.ID, time.Now().UTC())
-		log.Printf("[worker] auto window closed (%.0fW < %.0fW)", power, threshold)
+// auto-window detector tuning. The window opens on a sustained rise of openDelta
+// watts above the rolling baseline and closes on a fall back toward it (hysteresis),
+// with a hard duration cap and a cooldown so it can never run forever.
+const (
+	autoMaxDuration = 15 * time.Minute
+	autoCooldown    = 5 * time.Minute
+	autoBaselineA   = 0.02 // EWMA weight for the idle-power baseline
+)
+
+// autoWindow runs the baseline-relative auto-window state machine. It's invoked on
+// every monitored-power sample with the summed power, the open delta (watts above
+// baseline, from threshold_w), and whether the opt-in feature is enabled. Called
+// only from the single-threaded HA callback, so w.aw needs no locking.
+func (w *worker) autoWindow(ctx context.Context, power, openDelta float64, on bool) {
+	now := time.Now().UTC()
+	if !w.aw.inited {
+		// adopt a pre-existing open window so it's governed (and capped/closed), not orphaned
+		if o, ok := w.d.OpenWindow(ctx, "auto"); ok {
+			w.aw.open, w.aw.openID = true, o.ID
+			if t, err := time.Parse(time.RFC3339Nano, o.StartTS); err == nil {
+				w.aw.openedAt = t
+			} else {
+				w.aw.openedAt = now
+			}
+		}
+		w.aw.baseline = power
+		w.aw.inited = true
+	}
+
+	if !on {
+		// feature disabled (the default): self-heal any window left open
+		if w.aw.open {
+			_, _ = w.d.StopTest(ctx, w.aw.openID, now)
+			w.aw.open, w.aw.lastClosedAt = false, now
+			log.Printf("[worker] auto window closed (feature off)")
+		}
+		return
+	}
+
+	if openDelta <= 0 {
+		openDelta = 50
+	}
+	closeDelta := openDelta * 0.5
+
+	if !w.aw.open {
+		// track the idle baseline only while no window is open, so the spike itself
+		// doesn't drag the baseline up and mask the close.
+		w.aw.baseline = w.aw.baseline*(1-autoBaselineA) + power*autoBaselineA
+		if power >= w.aw.baseline+openDelta && now.Sub(w.aw.lastClosedAt) >= autoCooldown {
+			if t, err := w.d.CreateTest(ctx, "auto load "+now.Format("15:04"), now, nil, "auto"); err == nil {
+				w.aw.open, w.aw.openID, w.aw.openedAt = true, t.ID, now
+				log.Printf("[worker] auto window opened (%.0fW ≥ baseline %.0f + %.0f)", power, w.aw.baseline, openDelta)
+			}
+		}
+		return
+	}
+
+	// open: close on fall-back (hysteresis) or the hard duration cap
+	if power < w.aw.baseline+closeDelta || now.Sub(w.aw.openedAt) >= autoMaxDuration {
+		_, _ = w.d.StopTest(ctx, w.aw.openID, now)
+		w.aw.open, w.aw.lastClosedAt = false, now
+		log.Printf("[worker] auto window closed (%.0fW, after %s)", power, now.Sub(w.aw.openedAt).Round(time.Second))
 	}
 }
 

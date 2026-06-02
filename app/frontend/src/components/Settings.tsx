@@ -3,7 +3,7 @@ import { Server, Send, Activity, DollarSign, Sliders, RefreshCw } from "lucide-r
 import { api, PowerEntity, Status } from "../api";
 import { fmt } from "../util";
 import { Page } from "./shell";
-import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, useToast } from "../ui";
+import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, Toggle, useToast } from "../ui";
 
 export default function Settings() {
   const toast = useToast();
@@ -18,7 +18,7 @@ export default function Settings() {
 
   const save = () => {
     const body: Record<string, string> = {};
-    ["ha_url", "ha_token", "mqtt_host", "mqtt_port", "mqtt_user", "mqtt_pass", "mqtt_prefix", "threshold_w", "default_multiplier", "default_unit", "cost_per_kwh", "currency"]
+    ["ha_url", "ha_token", "mqtt_host", "mqtt_port", "mqtt_user", "mqtt_pass", "mqtt_prefix", "threshold_w", "auto_window", "default_multiplier", "default_unit", "cost_per_kwh", "currency"]
       .forEach((k) => { if (s[k] !== undefined && s[k] !== "") body[k] = String(s[k]); });
     return api.putSettings(body).then(load);
   };
@@ -68,11 +68,20 @@ export default function Settings() {
           </CardBody>
         </Card>
         <Card>
-          <CardHeader title="Tuning" icon={<Sliders size={16} />} subtitle="Defaults for new published sensors and auto load windows." />
-          <CardBody className="grid grid-cols-3 gap-3">
-            <Field label="Load threshold (W)"><Input value={field("threshold_w")} onChange={(e) => set("threshold_w", e.target.value)} placeholder="50" /></Field>
-            <Field label="Default multiplier"><Input value={field("default_multiplier")} onChange={(e) => set("default_multiplier", e.target.value)} placeholder="1" /></Field>
-            <Field label="Default unit"><Input value={field("default_unit")} onChange={(e) => set("default_unit", e.target.value)} placeholder="kWh" /></Field>
+          <CardHeader title="Tuning" icon={<Sliders size={16} />} subtitle="Defaults for new published sensors, and optional auto load-window detection." />
+          <CardBody className="space-y-3">
+            <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-app/40 p-3">
+              <div className="min-w-0">
+                <div className="text-small font-medium text-text">Auto load windows</div>
+                <p className="text-micro text-tertiary">Auto-detect an appliance spike above the baseline as a load test. Off by default — only enable if your monitored set returns near idle between tests.</p>
+              </div>
+              <Toggle checked={field("auto_window") === "1"} onChange={(v) => set("auto_window", v ? "1" : "0")} />
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Spike threshold (W over baseline)" hint="opens an auto window"><Input value={field("threshold_w")} onChange={(e) => set("threshold_w", e.target.value)} placeholder="50" /></Field>
+              <Field label="Default multiplier"><Input value={field("default_multiplier")} onChange={(e) => set("default_multiplier", e.target.value)} placeholder="1" /></Field>
+              <Field label="Default unit"><Input value={field("default_unit")} onChange={(e) => set("default_unit", e.target.value)} placeholder="kWh" /></Field>
+            </div>
           </CardBody>
         </Card>
       </div>
