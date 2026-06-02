@@ -4,6 +4,7 @@ import {
 import { api, PublishedLive, Anomaly } from "../api";
 import { useLive, perMin } from "../live";
 import { useFetch } from "../fetch";
+import { useSourceLabels } from "../sources";
 import { fmt } from "../util";
 import { Page, View } from "./shell";
 import { Card, CardHeader, CardBody, StatCard, Badge, Dot, Button, EmptyState, Skeleton } from "../ui";
@@ -15,6 +16,7 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
   const { power, powerHistory, readings, configVersion } = useLive();
   const ov = useFetch(api.overview, [configVersion]);
   const health = useFetch(api.health, [configVersion]);
+  const srcLabel = useSourceLabels();
 
   const pubs = ov.data?.published || [];
   const anomalies = ov.data?.anomalies || [];
@@ -58,7 +60,7 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
       {anomalies.length > 0 && (
         <Card variant="alert">
           <CardHeader title="Alerts" icon={<AlertTriangle size={16} className="text-bad" />} subtitle={`${anomalies.length} need attention`} />
-          <CardBody className="space-y-2">{anomalies.map((a, i) => <AlertRow key={i} a={a} />)}</CardBody>
+          <CardBody className="space-y-2">{anomalies.map((a, i) => <AlertRow key={i} a={a} srcLabel={srcLabel} />)}</CardBody>
         </Card>
       )}
 
@@ -83,7 +85,7 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
               : health.data!.sources.map((s) => (
                 <div key={s.source} className="flex items-center gap-2 text-small">
                   <Dot tone={s.alive ? "good" : "bad"} />
-                  <span className="mono truncate text-secondary">{s.source}</span>
+                  <span className="truncate text-secondary">{srcLabel(s.source)}</span>
                   <span className="ml-auto tabular-nums text-tertiary">{perMin(readings, s.source) || s.packets_last_min}/min</span>
                 </div>
               ))}
@@ -166,14 +168,14 @@ function PubCard({ p, cur, onClick }: { p: PublishedLive; cur: string; onClick: 
     </Card>
   );
 }
-function AlertRow({ a }: { a: Anomaly }) {
+function AlertRow({ a, srcLabel }: { a: Anomaly; srcLabel: (s: string) => string }) {
   const label = a.kind === "dropout" ? "Dropout" : a.kind === "stuck" ? "Stuck odometer" : "Source down";
-  const who = a.source ? a.source : a.endpoint_id ? `#${a.endpoint_id}` : "";
+  const who = a.source ? srcLabel(a.source) : a.endpoint_id ? `#${a.endpoint_id}` : "";
   return (
     <div className="flex items-center gap-2.5 rounded-lg bg-bad/5 px-3 py-2 text-small">
       <AlertTriangle size={15} className="shrink-0 text-bad" />
       <span className="font-medium text-text">{label}</span>
-      <span className="mono text-tertiary">{who}</span>
+      <span className="truncate text-tertiary">{who}</span>
       <span className="ml-auto truncate text-tertiary">{a.detail.replace(/[TZ]/g, " ").trim()}</span>
     </div>
   );

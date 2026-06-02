@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"embed"
 	"io/fs"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"time"
 
+	"winnow/internal/agentwire"
 	"winnow/internal/config"
 	"winnow/internal/db"
 )
@@ -22,6 +24,7 @@ var distFS embed.FS
 type server struct {
 	d      *db.DB
 	broker *broker
+	agent  *agentCrypto
 }
 
 func main() {
@@ -37,6 +40,12 @@ func main() {
 	s := &server{d: d, broker: newBroker()}
 	go s.broker.run(ctx, d) // LISTEN → SSE fan-out
 
+	if ac, err := ensureAgentCrypto(ctx, d); err != nil {
+		log.Printf("[api] agent crypto init: %v (remote agents disabled)", err)
+	} else {
+		s.agent = ac
+	}
+
 	mux := http.NewServeMux()
 	s.routes(mux)
 
@@ -44,8 +53,29 @@ func main() {
 	if p := os.Getenv("PORT"); p != "" {
 		addr = ":" + p
 	}
-	log.Printf("[api] listening on %s", addr)
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+
+	// Optional outer TLS listener for remote agents (defense-in-depth; the agent
+	// payload is already app-layer-encrypted). Same mux, so a future reverse proxy
+	// can instead front the plain :8000 listener with no app change.
+	if s.agent != nil {
+		tlsAddr := ":8443"
+		if p := os.Getenv("AGENT_TLS_PORT"); p != "" {
+			tlsAddr = ":" + p
+		}
+		tlsSrv := &http.Server{
+			Addr:              tlsAddr,
+			Handler:           mux,
+			ReadHeaderTimeout: 10 * time.Second,
+			TLSConfig:         &tls.Config{Certificates: []tls.Certificate{s.agent.cert}},
+		}
+		go func() {
+			log.Printf("[api] agent TLS listening on %s (key %s)", tlsAddr, agentwire.Fingerprint(s.agent.pub))
+			log.Fatal(tlsSrv.ListenAndServeTLS("", ""))
+		}()
+	}
+
+	log.Printf("[api] listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
 }
 
@@ -95,6 +125,11 @@ func (s *server) routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/devices", s.handleDevices)
 	mux.HandleFunc("PUT /api/devices/{serial}", s.handlePutDevice)
+
+	mux.HandleFunc("GET /api/agent/ws", s.handleAgentWS)
+	mux.HandleFunc("GET /api/agents", s.handleAgents)
+	mux.HandleFunc("POST /api/agents", s.handleAuthorizeAgent)
+	mux.HandleFunc("POST /api/agents/revoke", s.handleRevokeAgent)
 
 	mux.HandleFunc("GET /api/identify", s.handleIdentify)
 	mux.HandleFunc("GET /api/identify/auto", s.handleIdentifyAuto)

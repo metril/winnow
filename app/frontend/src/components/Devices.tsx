@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
-import { RadioTower, Sliders, RotateCcw, Pencil, SatelliteDish, Save } from "lucide-react";
-import { api, Device, ScanSettings, DeviceConfig, CoverageCell } from "../api";
+import { RadioTower, Sliders, RotateCcw, Pencil, SatelliteDish, Save, Trash2 } from "lucide-react";
+import { api, Device, ScanSettings, DeviceConfig, CoverageResp } from "../api";
 import { useLive, perMin } from "../live";
 import { useFetch } from "../fetch";
 import { useChartTheme } from "./chartTheme";
 import { fmt, shortTs } from "../util";
 import { Page } from "./shell";
-import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, Toggle, EmptyState, Skeleton, useToast } from "../ui";
+import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, Toggle, EmptyState, Skeleton, Dialog, InfoHint, useToast } from "../ui";
 
 const FREQ_PRESETS: Record<string, string> = { "912600155": "US 915 MHz ISM (912.6)", "868000000": "EU 868 MHz" };
 const MSG_TYPES = ["scm", "scm+", "idm", "r900", "r900bcd"];
@@ -56,12 +56,12 @@ function ScanCard({ defaults, onSaved }: { defaults?: ScanSettings; onSaved: () 
         subtitle="The baseline every dongle inherits. Changing a default applies to every dongle that hasn't overridden that field." />
       <CardBody>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Field label="Center frequency (Hz)"><Input value={s.freq} onChange={(e) => setS({ ...s, freq: e.target.value })} list="freqs" /><datalist id="freqs">{Object.keys(FREQ_PRESETS).map((f) => <option key={f} value={f}>{FREQ_PRESETS[f]}</option>)}</datalist></Field>
-          <Field label="Gain (blank = auto)"><Input value={s.gain} onChange={(e) => setS({ ...s, gain: e.target.value })} placeholder="auto" /></Field>
-          <Field label="PPM correction"><Input value={s.ppm} onChange={(e) => setS({ ...s, ppm: e.target.value })} placeholder="0" /></Field>
-          <Field label="Filter to meter id"><Input value={s.filterid} onChange={(e) => setS({ ...s, filterid: e.target.value })} placeholder="all meters" /></Field>
+          <Field label={<>Center frequency (Hz) <InfoHint>The band the dongle tunes to. US utility ERT meters use the 915 MHz ISM band (912.6 MHz); EU uses 868 MHz.</InfoHint></>}><Input value={s.freq} onChange={(e) => setS({ ...s, freq: e.target.value })} list="freqs" /><datalist id="freqs">{Object.keys(FREQ_PRESETS).map((f) => <option key={f} value={f}>{FREQ_PRESETS[f]}</option>)}</datalist></Field>
+          <Field label={<>Gain <InfoHint>Tuner amplification in dB. Leave blank for automatic gain — only set a fixed value if a strong nearby signal is overloading the receiver.</InfoHint></>}><Input value={s.gain} onChange={(e) => setS({ ...s, gain: e.target.value })} placeholder="auto" /></Field>
+          <Field label={<>PPM correction <InfoHint>Crystal frequency error in parts-per-million. Cheap dongles drift; if reception is weak, nudge this until packet counts peak. 0 is fine for most.</InfoHint></>}><Input value={s.ppm} onChange={(e) => setS({ ...s, ppm: e.target.value })} placeholder="0" /></Field>
+          <Field label={<>Filter to meter id <InfoHint>Restrict decoding to one (or comma-separated) meter endpoint id(s) to cut noise once you know yours. Blank = decode all meters in range.</InfoHint></>}><Input value={s.filterid} onChange={(e) => setS({ ...s, filterid: e.target.value })} placeholder="all meters" /></Field>
         </div>
-        <div className="mt-3"><div className="label mb-1.5">Message types</div><MsgTypeChips value={s.msgtype} onChange={(v) => setS({ ...s, msgtype: v })} /></div>
+        <div className="mt-3"><div className="label mb-1.5 flex items-center gap-1.5">Message types <InfoHint>ERT broadcast protocols to decode. SCM &amp; SCM+ cover most US electric/gas/water meters; IDM/NetIDM carry interval data; R900 is common for water. Enable only what your meters use to reduce CPU.</InfoHint></div><MsgTypeChips value={s.msgtype} onChange={(v) => setS({ ...s, msgtype: v })} /></div>
         <div className="mt-4 flex items-center gap-2">
           <Button variant="primary" onClick={apply} success="Defaults applied — capture reloading">Apply defaults</Button>
           <span className="text-micro text-tertiary">{FREQ_PRESETS[s.freq] || "custom band"}</span>
@@ -164,27 +164,64 @@ function DeviceCard({ d, defaults, liveRate, onChange }: { d: Device; defaults: 
 
 function Coverage() {
   const t = useChartTheme();
-  const [cells, setCells] = useState<CoverageCell[] | null>(null);
-  useEffect(() => { api.coverage().then(setCells).catch(() => setCells([])); }, []);
-  if (!cells) return <Card><CardBody><Skeleton className="h-24" /></CardBody></Card>;
+  const toast = useToast();
+  const [resp, setResp] = useState<CoverageResp | null>(null);
+  const [showFormer, setShowFormer] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const load = () => api.coverage().then(setResp).catch(() => setResp({ cells: [], sources: [] }));
+  useEffect(() => { load(); }, []);
+  if (!resp) return <Card><CardBody><Skeleton className="h-24" /></CardBody></Card>;
+  const { cells } = resp;
   if (!cells.length) return null;
-  const sources = [...new Set(cells.map((c) => c.source))].sort();
+
+  const labelOf: Record<string, string> = {}; const presentOf: Record<string, boolean> = {};
+  resp.sources.forEach((s) => { labelOf[s.source] = s.label; presentOf[s.source] = s.present; });
+  const former = resp.sources.filter((s) => !s.present);
+  // present dongles are always shown; former ones only when the user opts in
+  const sources = resp.sources.filter((s) => s.present || showFormer).map((s) => s.source);
+
   const get: Record<string, number> = {}; let max = 1;
   const meterTotal: Record<number, number> = {};
-  cells.forEach((c) => { get[`${c.source}-${c.endpoint_id}`] = c.packets; max = Math.max(max, c.packets); meterTotal[c.endpoint_id] = (meterTotal[c.endpoint_id] || 0) + c.packets; });
+  cells.forEach((c) => {
+    if (!sources.includes(c.source)) return;
+    get[`${c.source}-${c.endpoint_id}`] = c.packets; max = Math.max(max, c.packets);
+    meterTotal[c.endpoint_id] = (meterTotal[c.endpoint_id] || 0) + c.packets;
+  });
   // sort meters by total packets (strongest reception first) — never an unsorted matrix
-  const meters = [...new Set(cells.map((c) => c.endpoint_id))].sort((a, b) => (meterTotal[b] || 0) - (meterTotal[a] || 0));
+  const meters = [...new Set(cells.filter((c) => sources.includes(c.source)).map((c) => c.endpoint_id))]
+    .sort((a, b) => (meterTotal[b] || 0) - (meterTotal[a] || 0));
   const shown = meters.slice(0, 60);
-  const perSource = sources.map((s) => ({ s, total: cells.filter((c) => c.source === s).reduce((a, c) => a + c.packets, 0), heard: new Set(cells.filter((c) => c.source === s).map((c) => c.endpoint_id)).size }));
+  const perSource = sources.map((s) => ({
+    s, label: labelOf[s] || s, present: presentOf[s],
+    total: cells.filter((c) => c.source === s).reduce((a, c) => a + c.packets, 0),
+    heard: new Set(cells.filter((c) => c.source === s).map((c) => c.endpoint_id)).size,
+  }));
+
+  const removeSource = (src: string) =>
+    api.adminDelete({ mode: "source", source: src, confirm: "DELETE" })
+      .then((r) => { setRemoving(null); toast.show(`Removed ${fmt(r.removed)} rows from ${labelOf[src] || src}`, "good"); load(); })
+      .catch((e) => toast.show(String(e), "bad"));
+
   return (
     <Card>
-      <CardHeader title="Reception coverage" icon={<SatelliteDish size={16} />} subtitle="Which dongle hears which meter (all-time, strongest first). Use it to place and aim your SDRs." />
+      <CardHeader title="Reception coverage" icon={<SatelliteDish size={16} />}
+        subtitle="Which dongle hears which meter (all-time, strongest first). Use it to place and aim your SDRs."
+        actions={former.length > 0 && (
+          <Toggle checked={showFormer} onChange={setShowFormer} label={`show ${former.length} former`} />
+        )} />
       <CardBody>
         <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
           {perSource.map((p) => (
             <div key={p.s} className="rounded-md border border-border bg-app/40 px-3 py-2">
-              <div className="label mono">{p.s}</div><div className="mt-1 text-h2 tabular-nums text-text">{p.heard}</div>
-              <div className="text-micro text-tertiary">{fmt(p.total)} pkts · meters heard</div>
+              <div className="flex items-center gap-1.5">
+                <span className="truncate text-small font-medium text-text">{p.label}</span>
+                {!p.present && <Badge tone="bad">former</Badge>}
+              </div>
+              <div className="mt-1 text-h2 tabular-nums text-text">{p.heard}</div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-micro text-tertiary">{fmt(p.total)} pkts · meters heard</span>
+                {!p.present && <button type="button" onClick={() => setRemoving(p.s)} className="inline-flex items-center gap-1 text-micro text-bad hover:underline"><Trash2 size={11} /> remove</button>}
+              </div>
             </div>
           ))}
         </div>
@@ -194,11 +231,12 @@ function Coverage() {
             {[0.15, 0.35, 0.55, 0.75, 0.95].map((a) => <span key={a} className="flex-1" style={{ background: t.heat(a) }} />)}
           </span>
           <span>more packets</span>
+          <InfoHint>Each cell counts all-time packets that dongle decoded from that meter. Warmer = stronger reception. Reposition a dongle to raise your meter's count.</InfoHint>
           {meters.length > shown.length && <span className="ml-auto">showing {shown.length} of {meters.length} meters</span>}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-micro">
-            <thead><tr className="text-left text-tertiary"><th className="py-1 pr-3 font-medium">meter</th>{sources.map((s) => <th key={s} className="mono px-2 py-1 text-center font-medium">{s}</th>)}</tr></thead>
+            <thead><tr className="text-left text-tertiary"><th className="py-1 pr-3 font-medium">meter</th>{sources.map((s) => <th key={s} className="px-2 py-1 text-center font-medium">{labelOf[s] || s}</th>)}</tr></thead>
             <tbody>
               {shown.map((m) => (
                 <tr key={m} className="border-t border-border/50">
@@ -213,6 +251,15 @@ function Coverage() {
           </table>
         </div>
       </CardBody>
+
+      <Dialog open={!!removing} onClose={() => setRemoving(null)}
+        title={<span className="inline-flex items-center gap-2 text-bad"><Trash2 size={16} /> Remove dongle data</span>}
+        footer={<>
+          <Button variant="ghost" onClick={() => setRemoving(null)}>Cancel</Button>
+          <Button variant="danger" onClick={() => { if (removing) return removeSource(removing); }}>Remove all readings</Button>
+        </>}>
+        <p className="text-text">Permanently delete every reading from the departed dongle “{removing && (labelOf[removing] || removing)}”. This clears it from the coverage matrix and cannot be undone.</p>
+      </Dialog>
     </Card>
   );
 }

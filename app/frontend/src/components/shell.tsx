@@ -1,7 +1,7 @@
 import { ReactNode, useState } from "react";
 import {
   LayoutDashboard, Crosshair, Zap, Gauge, RadioTower, Settings as SettingsIcon,
-  ChevronLeft, ChevronRight, Radio, Database,
+  ChevronLeft, ChevronRight, Radio, Database, Satellite,
 } from "lucide-react";
 import { api } from "../api";
 import { useLive, perMin } from "../live";
@@ -10,13 +10,13 @@ import { ThemeToggle } from "../theme";
 import { cx, Dot } from "../ui";
 import { fmt } from "../util";
 
-export type View = "overview" | "identify" | "meters" | "loadtests" | "devices" | "maintenance" | "settings";
+export type View = "overview" | "identify" | "meters" | "loadtests" | "devices" | "agents" | "maintenance" | "settings";
 
 const GROUPS: { label: string | null; items: { id: View; label: string; icon: any }[] }[] = [
   { label: null, items: [{ id: "overview", label: "Overview", icon: LayoutDashboard }] },
   { label: "Find my meter", items: [{ id: "identify", label: "Identify", icon: Crosshair }, { id: "loadtests", label: "Load tests", icon: Zap }] },
   { label: "Inventory", items: [{ id: "meters", label: "Meters", icon: Gauge }, { id: "devices", label: "Devices", icon: RadioTower }] },
-  { label: "System", items: [{ id: "maintenance", label: "Maintenance", icon: Database }] },
+  { label: "System", items: [{ id: "agents", label: "Remote agents", icon: Satellite }, { id: "maintenance", label: "Maintenance", icon: Database }] },
 ];
 
 export function AppShell({ view, onNav, children }: { view: View; onNav: (v: View) => void; children: ReactNode }) {

@@ -94,10 +94,19 @@ export interface DBStats {
   retention_policy?: string; compression_policy?: string;
   sources: SourceStat[];
 }
-export type MaintOp = "vacuum" | "reindex" | "refresh_agg" | "compress" | "prune_devices";
+export type MaintOp = "vacuum" | "reindex" | "refresh_agg" | "compress" | "prune_devices" | "scrub_zeros";
 export type DeleteMode = "age" | "source" | "all_tests" | "all_readings";
 
 export interface CoverageCell { source: string; endpoint_id: number; packets: number; last_seen: string; }
+export interface CoverageSource { source: string; label: string; present: boolean; }
+export interface CoverageResp { cells: CoverageCell[]; sources: CoverageSource[]; }
+
+export interface AuthorizedAgent { label: string; pubkey: string; fingerprint: string; }
+export interface RemoteDongle { source: string; label: string; alive: boolean; last_seen: string | null; }
+export interface AgentsResp {
+  server_key: string; server_fingerprint: string; tls_fingerprint: string;
+  authorized: AuthorizedAgent[]; remotes: RemoteDongle[];
+}
 export interface ProfilePoint { key: number; value: number; }
 export interface HeatCell { dow: number; hour: number; value: number; }
 export interface DailyPoint { day: string; value: number; }
@@ -146,7 +155,13 @@ export const api = {
   adminDelete: (body: { mode: DeleteMode; days?: number; source?: string; confirm: string }) =>
     j<{ ok: boolean; mode: string; removed: number }>("/api/admin/delete", { method: "POST", body: JSON.stringify(body) }),
 
-  coverage: () => j<CoverageCell[]>("/api/diagnostics/coverage"),
+  coverage: () => j<CoverageResp>("/api/diagnostics/coverage"),
+
+  agents: () => j<AgentsResp>("/api/agents"),
+  authorizeAgent: (label: string, pubkey: string) =>
+    j<{ ok: boolean }>("/api/agents", { method: "POST", body: JSON.stringify({ label, pubkey }) }),
+  revokeAgent: (pubkey: string) =>
+    j<{ ok: boolean }>("/api/agents/revoke", { method: "POST", body: JSON.stringify({ pubkey }) }),
   sourceTimeline: (qs = "") => j<Record<string, { bucket: string; packets: number }[]>>(`/api/diagnostics/sources${qs}`),
 
   identify: (hours: number) => j<any>(`/api/identify?hours=${hours}`),

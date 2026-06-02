@@ -5,7 +5,7 @@ import {
   ButtonHTMLAttributes, InputHTMLAttributes, SelectHTMLAttributes, TextareaHTMLAttributes,
 } from "react";
 import clsx from "clsx";
-import { Check, X, Info, Loader2, ArrowUp, ArrowDown, Minus } from "lucide-react";
+import { Check, X, Info, Loader2, ArrowUp, ArrowDown, Minus, HelpCircle } from "lucide-react";
 
 export const cx = clsx;
 function errMsg(e: any) { return String(e?.message ?? e ?? "error").replace(/^Error:\s*/, ""); }
@@ -201,8 +201,35 @@ export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
 export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
   return <select {...props} className={cx("input cursor-pointer pr-8", props.className)} />;
 }
-export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
-  return <label className="flex flex-col gap-1.5"><span className="label">{label}</span>{children}{hint && <span className="text-micro text-tertiary">{hint}</span>}</label>;
+export function Field({ label, children, hint }: { label: ReactNode; children: ReactNode; hint?: string }) {
+  return <label className="flex flex-col gap-1.5"><span className="label flex items-center gap-1.5">{label}</span>{children}{hint && <span className="text-micro text-tertiary">{hint}</span>}</label>;
+}
+
+/* ------------------------------ tooltip ---------------------------------- */
+// Dependency-free hover/focus tooltip. Wraps any trigger; the bubble is
+// absolutely positioned and revealed on group-hover/focus-within.
+export function Tooltip({ children, content, className }:
+  { children: ReactNode; content: ReactNode; className?: string }) {
+  return (
+    <span className={cx("group/tt relative inline-flex", className)}>
+      {children}
+      <span role="tooltip"
+        className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 hidden w-max max-w-[16rem] -translate-x-1/2 rounded-md border border-border-strong bg-overlay px-2.5 py-1.5 text-micro font-normal leading-snug text-secondary shadow-overlay group-hover/tt:block group-focus-within/tt:block">
+        {content}
+      </span>
+    </span>
+  );
+}
+// InfoHint is a small "?" affordance carrying a Tooltip — for inline jargon.
+export function InfoHint({ children }: { children: ReactNode }) {
+  return (
+    <Tooltip content={children}>
+      <button type="button" tabIndex={0} aria-label="More info"
+        className="text-tertiary transition hover:text-secondary focus:outline-none focus-visible:text-secondary">
+        <HelpCircle size={13} />
+      </button>
+    </Tooltip>
+  );
 }
 export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
   return (

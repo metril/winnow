@@ -80,6 +80,42 @@ dongles share the generic serial `00000001`, give them unique ones once with
 `rtl_eeprom -d <i> -s <name>` for stable identity across reboots. To pin a
 specific set instead, set `RTL_DEVICES=0,1` (a comma list of indices).
 
+## Remote SDRs (capture on another host)
+
+Place a dongle on a second machine (a Pi in the garage, a box near the meter) and
+stream its readings back. The remote runs the **same capture image in agent mode**:
+it decodes locally and pushes only decoded readings over an encrypted,
+mutually-authenticated WebSocket — a few packets/min, not raw IQ.
+
+**Security:** each side has a Curve25519 keypair. The session is end-to-end
+encrypted and authenticated at the application layer (NaCl `box`/`secretbox`), so
+the data is confidential even through a TLS-terminating proxy. The app also exposes
+an optional self-signed TLS listener on `:8443` (defense-in-depth).
+
+Pairing (the SSH `authorized_keys` model), all from **System → Remote agents**:
+
+1. On the main host, the app auto-generates its keypair + TLS cert on first boot.
+   Copy the **server public key** and **agent URL** from the dashboard.
+2. On the remote host, build the image (`docker build -f capture/Dockerfile -t
+   winnow-capture .`) and run it in agent mode:
+   ```bash
+   docker run -d --name winnow-agent --restart unless-stopped \
+     --device /dev/bus/usb:/dev/bus/usb -v winnow-agent-key:/data \
+     -e AGENT_URL=wss://<main-host>:8443/api/agent/ws \
+     -e AGENT_SERVER_KEY=<server public key> \
+     -e AGENT_NAME=garage \
+     winnow-capture
+   ```
+   (Same host prerequisites as below — blacklist the DVB-T driver, USB passthrough.)
+3. On first start the agent **prints its own public key**. Paste it into
+   **Authorized agents** in the dashboard. It connects within seconds and its dongle
+   appears in the inventory and coverage like a local one, tunable per-dongle.
+
+Optional: pin the outer TLS with `-e AGENT_SERVER_FINGERPRINT=<TLS fingerprint
+shown in the dashboard>`. If you later add a reverse proxy, point `AGENT_URL` at it
+and drop the fingerprint — the app-layer auth is unchanged. The agent key persists
+in the `winnow-agent-key` volume, so restarts don't need re-authorizing.
+
 ## Configure Home Assistant (in the dashboard)
 
 Open **Settings → Integrations** and enter:

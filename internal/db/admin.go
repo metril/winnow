@@ -131,6 +131,29 @@ func (d *DB) RunMaintenance(ctx context.Context, op string) error {
 SELECT compress_chunk(c, if_not_compressed => true)
 FROM show_chunks('readings', older_than => INTERVAL '7 days') c`)
 		return err
+	case "scrub_zeros":
+		// Remove garbage 0 (or negative) cumulative readings that crash the chart
+		// and poison min_consumption, then recompute the registry rollups for any
+		// meter whose min/last was affected.
+		if _, err := d.pool.Exec(ctx, `DELETE FROM readings WHERE consumption <= 0`); err != nil {
+			return err
+		}
+		_, err := d.pool.Exec(ctx, `
+UPDATE meter_index mi SET
+  min_consumption     = s.min_c,
+  max_consumption     = s.max_c,
+  last_consumption    = s.last_c,
+  last_consumption_ts = s.last_ts
+FROM (
+  SELECT endpoint_id,
+         min(consumption) AS min_c,
+         max(consumption) AS max_c,
+         (array_agg(consumption ORDER BY ts DESC))[1] AS last_c,
+         max(ts) AS last_ts
+  FROM readings WHERE consumption IS NOT NULL GROUP BY endpoint_id
+) s
+WHERE mi.endpoint_id = s.endpoint_id`)
+		return err
 	default:
 		return fmt.Errorf("unknown maintenance op %q", op)
 	}

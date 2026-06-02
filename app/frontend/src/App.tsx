@@ -9,6 +9,7 @@ import Identify from "./components/Identify";
 import Meters from "./components/Meters";
 import LoadTests from "./components/LoadTests";
 import Devices from "./components/Devices";
+import Agents from "./components/Agents";
 import Maintenance from "./components/Maintenance";
 import Settings from "./components/Settings";
 
@@ -25,6 +26,7 @@ export default function App() {
             {view === "meters" && <Meters />}
             {view === "loadtests" && <LoadTests />}
             {view === "devices" && <Devices />}
+            {view === "agents" && <Agents />}
             {view === "maintenance" && <Maintenance />}
             {view === "settings" && <Settings />}
           </AppShell>

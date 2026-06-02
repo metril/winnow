@@ -68,6 +68,9 @@ services:
       MQTT_PREFIX: ${MQTT_PREFIX:-homeassistant}
     ports:
       - "${APP_PORT:-8000}:8000"
+      # Encrypted listener for remote capture agents (wss). The agent payload is
+      # already app-layer-encrypted; this is the optional outer TLS.
+      - "${AGENT_TLS_PORT:-8443}:8443"
     depends_on:
       db: { condition: service_healthy }
 

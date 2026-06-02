@@ -3,7 +3,7 @@ import { Server, Send, Activity, DollarSign, Sliders, RefreshCw } from "lucide-r
 import { api, PowerEntity, Status } from "../api";
 import { fmt } from "../util";
 import { Page } from "./shell";
-import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, Toggle, useToast } from "../ui";
+import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, Toggle, InfoHint, useToast } from "../ui";
 
 export default function Settings() {
   const toast = useToast();
@@ -52,7 +52,7 @@ export default function Settings() {
             <Field label="Port"><Input value={field("mqtt_port")} onChange={(e) => set("mqtt_port", e.target.value)} placeholder="1883" /></Field>
             <Field label="Username"><Input value={field("mqtt_user")} onChange={(e) => set("mqtt_user", e.target.value)} /></Field>
             <Field label="Password"><Input type="password" value={field("mqtt_pass")} onChange={(e) => set("mqtt_pass", e.target.value)} placeholder={secret("mqtt_pass")} /></Field>
-            <Field label="Discovery prefix"><Input value={field("mqtt_prefix")} onChange={(e) => set("mqtt_prefix", e.target.value)} placeholder="homeassistant" /></Field>
+            <Field label={<>Discovery prefix <InfoHint>The MQTT topic root Home Assistant watches for auto-discovery. Must match HA's MQTT integration setting — the default “homeassistant” is almost always correct.</InfoHint></>}><Input value={field("mqtt_prefix")} onChange={(e) => set("mqtt_prefix", e.target.value)} placeholder="homeassistant" /></Field>
           </CardBody>
         </Card>
       </div>
@@ -69,18 +69,32 @@ export default function Settings() {
         </Card>
         <Card>
           <CardHeader title="Tuning" icon={<Sliders size={16} />} subtitle="Defaults for new published sensors, and optional auto load-window detection." />
-          <CardBody className="space-y-3">
-            <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-app/40 p-3">
-              <div className="min-w-0">
-                <div className="text-small font-medium text-text">Auto load windows</div>
-                <p className="text-micro text-tertiary">Auto-detect an appliance spike above the baseline as a load test. Off by default — only enable if your monitored set returns near idle between tests.</p>
+          <CardBody className="space-y-4">
+            <div className="rounded-md border border-border bg-app/40 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-small font-medium text-text">
+                    Auto load windows
+                    <InfoHint>Automatically records a "load test" window when summed monitored power spikes above its rolling idle baseline. Off by default — only enable if your monitored set returns near idle between tests.</InfoHint>
+                  </div>
+                  <p className="text-micro text-tertiary">Auto-detect an appliance spike above the baseline as a load test.</p>
+                </div>
+                <Toggle checked={field("auto_window") === "1"} onChange={(v) => set("auto_window", v ? "1" : "0")} />
               </div>
-              <Toggle checked={field("auto_window") === "1"} onChange={(v) => set("auto_window", v ? "1" : "0")} />
+              {field("auto_window") === "1" && (
+                <div className="mt-3 border-t border-border pt-3">
+                  <Field label="Spike threshold" hint="watts above the rolling baseline that opens a window (closes at half this)">
+                    <Input value={field("threshold_w")} onChange={(e) => set("threshold_w", e.target.value)} placeholder="50" className="w-40" inputMode="numeric" />
+                  </Field>
+                </div>
+              )}
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <Field label="Spike threshold (W over baseline)" hint="opens an auto window"><Input value={field("threshold_w")} onChange={(e) => set("threshold_w", e.target.value)} placeholder="50" /></Field>
-              <Field label="Default multiplier"><Input value={field("default_multiplier")} onChange={(e) => set("default_multiplier", e.target.value)} placeholder="1" /></Field>
-              <Field label="Default unit"><Input value={field("default_unit")} onChange={(e) => set("default_unit", e.target.value)} placeholder="kWh" /></Field>
+            <div>
+              <div className="label mb-1.5 flex items-center gap-1.5">Published-sensor defaults <InfoHint>Applied to each newly published meter sensor — its energy multiplier and unit. You can override these per meter.</InfoHint></div>
+              <div className="grid grid-cols-2 items-end gap-3">
+                <Field label="Default multiplier"><Input value={field("default_multiplier")} onChange={(e) => set("default_multiplier", e.target.value)} placeholder="1" inputMode="decimal" /></Field>
+                <Field label="Default unit"><Input value={field("default_unit")} onChange={(e) => set("default_unit", e.target.value)} placeholder="kWh" /></Field>
+              </div>
             </div>
           </CardBody>
         </Card>

@@ -577,7 +577,38 @@ func (s *server) handleCoverage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	writeJSON(w, cells)
+	// Annotate each distinct source with a friendly label and whether the dongle is
+	// still present (in sdr_devices). The coverage matrix is all-time, so departed
+	// dongles linger in meter_source; the UI uses `present` to hide them by default.
+	cfg, _ := s.d.LoadConfig(r.Context())
+	devs, _ := s.d.ListDevices(r.Context(), 60*time.Second)
+	present := map[string]string{} // serial -> hardware name
+	for _, d := range devs {
+		present[d.Serial] = d.Name
+	}
+	seen := map[string]bool{}
+	type covSource struct {
+		Source  string `json:"source"`
+		Label   string `json:"label"`
+		Present bool   `json:"present"`
+	}
+	sources := []covSource{}
+	for _, c := range cells {
+		if seen[c.Source] {
+			continue
+		}
+		seen[c.Source] = true
+		name, ok := present[c.Source]
+		label := cfg.Capture.Devices[c.Source].Label
+		if label == "" {
+			label = name
+		}
+		if label == "" {
+			label = c.Source
+		}
+		sources = append(sources, covSource{Source: c.Source, Label: label, Present: ok})
+	}
+	writeJSON(w, map[string]any{"cells": cells, "sources": sources})
 }
 
 func (s *server) handleSourceTimeline(w http.ResponseWriter, r *http.Request) {

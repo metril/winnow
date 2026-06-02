@@ -1,11 +1,12 @@
 import { useState } from "react";
 import {
   Database, HardDrive, Rows3, Clock, Gauge, Wrench, Trash2, AlertTriangle,
-  Recycle, RefreshCw, Boxes, ListRestart,
+  Recycle, RefreshCw, Boxes, ListRestart, Eraser,
 } from "lucide-react";
 import { api, DBStats, MaintOp, DeleteMode } from "../api";
 import { useLive } from "../live";
 import { useFetch } from "../fetch";
+import { useSourceLabels } from "../sources";
 import { fmt, bytes, spanOf, shortTs } from "../util";
 import { Page } from "./shell";
 import {
@@ -28,6 +29,7 @@ export default function Maintenance() {
 
 /* ------------------------------- health ---------------------------------- */
 function Health({ s }: { s?: DBStats | null }) {
+  const srcLabel = useSourceLabels();
   if (!s) return <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24" />)}</div>;
   const ratio = s.uncompressed_bytes > 0 ? s.compressed_bytes / s.uncompressed_bytes : 0;
   const saved = ratio > 0 && ratio < 1 ? `${(1 / ratio).toFixed(1)}×` : "—";
@@ -67,7 +69,7 @@ function Health({ s }: { s?: DBStats | null }) {
             <tbody>
               {s.sources.map((src) => (
                 <tr key={src.source} className="border-b border-border/60">
-                  <Td><span className="id-pill">{src.source}</span></Td>
+                  <Td><span className="text-secondary">{srcLabel(src.source)}</span> <span className="mono text-micro text-tertiary">{src.source}</span></Td>
                   <Td num>{fmt(src.rows)}</Td>
                   <Td className="text-tertiary">{src.oldest ? shortTs(src.oldest).slice(0, 16) : "–"}</Td>
                   <Td className="text-tertiary">{src.newest ? shortTs(src.newest).slice(0, 16) : "–"}</Td>
@@ -90,6 +92,7 @@ function Ops({ onDone }: { onDone: () => void }) {
     { op: "refresh_agg", label: "Refresh aggregate", icon: RefreshCw, desc: "Re-materialize the 1-minute rollup." },
     { op: "compress", label: "Compress chunks", icon: Boxes, desc: "Compress chunks past the 7-day horizon." },
     { op: "prune_devices", label: "Prune devices", icon: Wrench, desc: "Drop inventory for departed dongles." },
+    { op: "scrub_zeros", label: "Scrub zero readings", icon: Eraser, desc: "Delete garbage 0-consumption rows and recompute meter rollups." },
   ];
   return (
     <Card>
@@ -117,6 +120,7 @@ const MODES: { value: DeleteMode; label: string }[] = [
 
 function DangerZone({ s, onDone }: { s?: DBStats | null; onDone: () => void }) {
   const toast = useToast();
+  const srcLabel = useSourceLabels();
   const [mode, setMode] = useState<DeleteMode>("age");
   const [days, setDays] = useState("90");
   const [source, setSource] = useState("");
@@ -158,7 +162,7 @@ function DangerZone({ s, onDone }: { s?: DBStats | null; onDone: () => void }) {
             <Field label="Source / dongle">
               <Select value={source} onChange={(e) => setSource(e.target.value)} className="w-56">
                 <option value="">choose a source…</option>
-                {sources.map((x) => <option key={x} value={x}>{x}</option>)}
+                {sources.map((x) => <option key={x} value={x}>{srcLabel(x)}{srcLabel(x) !== x ? ` (${x})` : ""}</option>)}
               </Select>
             </Field>
           )}

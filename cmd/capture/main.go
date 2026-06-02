@@ -20,6 +20,7 @@ import (
 	"winnow/internal/config"
 	"winnow/internal/db"
 	"winnow/internal/ert"
+	"winnow/internal/model"
 )
 
 func main() {
@@ -29,6 +30,13 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Remote-agent mode: decode locally and stream to the main app over an
+	// encrypted session. No DB access from the remote host.
+	if os.Getenv("AGENT_URL") != "" {
+		runAgent(ctx)
+		return
+	}
 
 	database := mustDB(ctx)
 	defer database.Close()
@@ -49,6 +57,14 @@ func main() {
 	// the running set whenever scan settings or the device selection change
 	// (Postgres LISTEN), or a dongle is hot-plugged (periodic re-enumerate).
 	(&manager{d: database, running: map[string]*runningDev{}}).run(ctx)
+}
+
+// Sink is the storage target for decoded readings. *db.DB satisfies it directly
+// (local mode); the remote agent provides a WebSocket-backed implementation so
+// the same supervise/ingest path serves both without knowing where data lands.
+type Sink interface {
+	InsertReading(ctx context.Context, r model.Reading, raw string) error
+	UpdateHeartbeat(ctx context.Context, source string, lastTS time.Time, total int64) error
 }
 
 // scanParams is the effective tuning for one dongle. It's comparable so a change
@@ -261,7 +277,7 @@ func mustDB(ctx context.Context) *db.DB {
 // superviseSDR runs rtl_tcp + rtlamr for one device with the given scan params,
 // restarting on failure until ctx is cancelled. rtl_tcp is addressed by the
 // device's current index; readings are tagged with its stable source id.
-func superviseSDR(ctx context.Context, d *db.DB, source string, p scanParams, up *atomic.Bool) {
+func superviseSDR(ctx context.Context, d Sink, source string, p scanParams, up *atomic.Bool) {
 	defer up.Store(false)
 	port := 1234 + p.devIndex
 	server := "127.0.0.1:" + itoa(port)
@@ -342,7 +358,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func superviseMock(ctx context.Context, d *db.DB, source string) {
+func superviseMock(ctx context.Context, d Sink, source string) {
 	for ctx.Err() == nil {
 		r, w := io.Pipe()
 		go func() { mockStream(ctx, w); w.Close() }()
@@ -355,7 +371,7 @@ func superviseMock(ctx context.Context, d *db.DB, source string) {
 }
 
 // ingest reads rtlamr JSON lines, stores them, and heartbeats every 25 rows.
-func ingest(ctx context.Context, d *db.DB, source string, stdout io.Reader) {
+func ingest(ctx context.Context, d Sink, source string, stdout io.Reader) {
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	var n int64

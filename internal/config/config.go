@@ -42,10 +42,41 @@ const (
 	// Cost/tariff (used to estimate $ for published meters).
 	KeyCostPerKwh = "cost_per_kwh"
 	KeyCurrency   = "currency"
+
+	// Remote-agent channel: the app's static Curve25519 keypair, the authorized
+	// agent public keys (JSON array of {label, pubkey}), and the auto-generated
+	// self-signed TLS cert/key for the optional wss listener. Auto-provisioned on
+	// first boot by the api service.
+	KeyAgentServerPub  = "agent_server_pub"
+	KeyAgentServerPriv = "agent_server_priv"
+	KeyAgentAuthorized = "agent_authorized"
+	KeyAgentTLSCert    = "agent_tls_cert"
+	KeyAgentTLSKey     = "agent_tls_key"
 )
 
 // SecretKeys are never returned in plaintext by the API (masked as set/unset).
-var SecretKeys = map[string]bool{KeyHAToken: true, KeyMQTTPass: true}
+var SecretKeys = map[string]bool{
+	KeyHAToken: true, KeyMQTTPass: true,
+	KeyAgentServerPriv: true, KeyAgentTLSKey: true,
+}
+
+// AuthorizedAgent is one entry in the agent allow-list (the SSH authorized_keys
+// model): a friendly label and the agent's static Curve25519 public key.
+type AuthorizedAgent struct {
+	Label  string `json:"label"`
+	PubKey string `json:"pubkey"`
+}
+
+// ParseAuthorizedAgents decodes the KeyAgentAuthorized JSON array (tolerant of
+// empty/blank).
+func ParseAuthorizedAgents(v string) []AuthorizedAgent {
+	out := []AuthorizedAgent{}
+	if v = strings.TrimSpace(v); v == "" {
+		return out
+	}
+	_ = json.Unmarshal([]byte(v), &out)
+	return out
+}
 
 // Config is the resolved runtime configuration.
 type Config struct {

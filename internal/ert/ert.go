@@ -66,6 +66,13 @@ func ExtractReading(line []byte, source string) (model.Reading, bool) {
 	if !idOK || !consOK {
 		return model.Reading{}, false
 	}
+	// Reject consumption <= 0 as a bad decode. The fields we read are cumulative
+	// dial/counter totals (Consumption / LastConsumptionCount) that are never 0 for
+	// an in-service meter; a 0 is CRC-passing garbage that would otherwise crash the
+	// cumulative chart to zero and poison meter_index.min_consumption.
+	if cons <= 0 {
+		return model.Reading{}, false
+	}
 	etype, etOK := pickInt(l.Message, "EndpointType", "Type")
 
 	ts := parseTime(l.Time)
