@@ -1,6 +1,8 @@
 # go build artifacts (binaries named after cmd/ dirs land at repo root)
 /api
 /worker
+# but keep the worker service's build dir (the ignored artifact is the *file* /worker)
+!/worker/
 *.test
 
 # python (legacy / dev venv)
