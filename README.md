@@ -60,6 +60,26 @@ docker compose up --build -d
 Try it with **no hardware**: `CAPTURE_MOCK=1 docker compose up --build` (synthetic
 meters, one with a built-in spike).
 
+## Container images & releases
+
+Prebuilt multi-arch images (`linux/amd64` + `linux/arm64`) are published to GHCR:
+
+- `ghcr.io/metril/winnow-app`
+- `ghcr.io/metril/winnow-capture`
+- `ghcr.io/metril/winnow-worker`
+
+Tags: `latest` and the semver ladder (`1.2.3`, `1.2`, `1`) on each release, plus
+`edge` and `sha-<short>` on every push to `main`.
+
+Releases are automated with [release-please](https://github.com/googleapis/release-please):
+commit with [Conventional Commits](https://www.conventionalcommits.org) (`feat:`, `fix:`,
+`feat!:`/`BREAKING CHANGE:` …); release-please opens a "release" PR that bumps the version
+and updates `CHANGELOG.md`, and merging it tags `vX.Y.Z` and publishes the images.
+
+> First-time GHCR setup: container packages are created **private**. After the first
+> publish, open each package on GitHub → **Package settings** → set visibility **Public**
+> and link it to the repo (or do it once via the API with a `write:packages` token).
+
 ## Host prerequisites (real capture)
 
 1. **Blacklist the DVB-T driver** (it grabs the dongle, so `rtl_tcp` fails):
