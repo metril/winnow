@@ -1,5 +1,10 @@
 # winnow — db (TimescaleDB) + capture + worker (singleton) + app (API/SPA).
 # Build context is the repo root for all Go services (shared module).
+#
+# Each Go service has both `image:` (the published multi-arch image on GHCR) and
+# `build:` (local build). To run released images: `docker compose pull && up -d`
+# (optionally pin a version with WINNOW_TAG=1.2.3). To build locally instead:
+# `docker compose up --build` (also how CAPTURE_MOCK dev works).
 services:
   db:
     image: timescale/timescaledb:2.17.2-pg16
@@ -17,6 +22,7 @@ services:
       retries: 15
 
   capture:
+    image: ghcr.io/metril/winnow-capture:${WINNOW_TAG:-latest}
     build: { context: ., dockerfile: capture/Dockerfile }
     restart: unless-stopped
     environment:
@@ -39,6 +45,7 @@ services:
     # privileged: true
 
   worker:
+    image: ghcr.io/metril/winnow-worker:${WINNOW_TAG:-latest}
     build: { context: ., dockerfile: worker/Dockerfile }
     restart: unless-stopped
     environment:
@@ -55,6 +62,7 @@ services:
       db: { condition: service_healthy }
 
   app:
+    image: ghcr.io/metril/winnow-app:${WINNOW_TAG:-latest}
     build: { context: ., dockerfile: app/Dockerfile }
     restart: unless-stopped
     environment:

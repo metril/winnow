@@ -71,6 +71,14 @@ Prebuilt multi-arch images (`linux/amd64` + `linux/arm64`) are published to GHCR
 Tags: `latest` and the semver ladder (`1.2.3`, `1.2`, `1`) on each release, plus
 `edge` and `sha-<short>` on every push to `main`.
 
+`compose.yaml` references these images, so you can run the stack without building:
+
+```bash
+docker compose pull && docker compose up -d   # pull released images
+WINNOW_TAG=1.0.0 docker compose up -d          # pin a specific version
+docker compose up --build -d                   # build locally instead (dev/mock)
+```
+
 Releases are automated with [release-please](https://github.com/googleapis/release-please):
 commit with [Conventional Commits](https://www.conventionalcommits.org) (`feat:`, `fix:`,
 `feat!:`/`BREAKING CHANGE:` …); release-please opens a "release" PR that bumps the version
@@ -88,7 +96,7 @@ and updates `CHANGELOG.md`, and merging it tags `vX.Y.Z` and publishes the image
      sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf
    sudo modprobe -r dvb_usb_rtl28xxu rtl2832 rtl2830 2>/dev/null || true   # or reboot
    ```
-2. **USB passthrough** is already wired in `docker-compose.yml` (`/dev/bus/usb` +
+2. **USB passthrough** is already wired in `compose.yaml` (`/dev/bus/usb` +
    a cgroup rule).
 
 **SDR auto-detection:** `RTL_DEVICES=auto` (the default) detects and uses *every*
