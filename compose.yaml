@@ -25,6 +25,11 @@ services:
     image: ghcr.io/metril/winnow-capture:${WINNOW_TAG:-latest}
     build: { context: ., dockerfile: capture/Dockerfile }
     restart: unless-stopped
+    # Optional CPU pinning. rtlamr demodulates a real-time IQ stream and falls
+    # behind ("not keeping up") if the scheduler parks it on slow cores. On a
+    # big.LITTLE host, pin to the performance cluster, e.g. CAPTURE_CPUSET=4-7
+    # (RK3588: cores 4-7 are the A76s). Empty = no pinning (default, portable).
+    cpuset: "${CAPTURE_CPUSET:-}"
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgres://winnow:winnow@db:5432/winnow}
       CAPTURE_MOCK: ${CAPTURE_MOCK:-0}
