@@ -70,8 +70,8 @@ type Sink interface {
 // scanParams is the effective tuning for one dongle. It's comparable so a change
 // is detected with ==.
 type scanParams struct {
-	devIndex                        int
-	freq, gain, ppm, msgtype, filt  string
+	devIndex                       int
+	freq, gain, ppm, msgtype, filt string
 }
 
 type runningDev struct {
@@ -89,12 +89,84 @@ type manager struct {
 	lastRescan time.Time
 }
 
-// openLock serializes rtl_tcp device opens. librtlsdr enumerates the whole USB
-// bus on open, so several receivers opening at once race and fail ("connection
-// refused" as rtl_tcp dies before binding) — especially with a marginal dongle
-// on a shared hub. Holding this during each open+bind window makes the good
-// dongles come up cleanly regardless of a bad neighbour.
-var openLock sync.Mutex
+// bus is the single USB-open governor. librtlsdr enumerates the whole USB bus on
+// every open and each open (rtl_tcp capture AND rtl_test enumeration) issues a
+// libusb device reset — so reset cadence, not the dongle, decides whether a
+// marginal device survives. ALL opens pass through here. It (a) serializes the
+// open+settle window so concurrent receivers don't race ("connection refused" as
+// rtl_tcp dies before binding) and (b) imposes one bus-wide escalating backoff so
+// a device that fails fast is never reset faster than USB can recover. The serial
+// window is a capacity-1 channel (not a Mutex) so acquisition is ctx-cancellable,
+// keeping shutdown prompt even mid-backoff.
+var bus = usbGate{sem: make(chan struct{}, 1)}
+
+type usbGate struct {
+	sem    chan struct{} // cap 1; held only across one open+settle window (~2s)
+	bmu    sync.Mutex    // guards fails/nextOK
+	fails  int
+	nextOK time.Time // earliest the next open may begin
+}
+
+const (
+	gateBase    = 30 * time.Second // first penalty; doubles per consecutive fast failure
+	gateMax     = 5 * time.Minute  // cap — a struggling bus gets long rests
+	gateHealthy = 60 * time.Second // a run/enumerate this good resets the penalty
+)
+
+// begin waits out any bus-wide backoff, then takes the serial window. It
+// sleeps-then-locks (never holds the window while waiting) and re-checks nextOK
+// after acquiring, so one dongle's long backoff never blocks another's read.
+// Returns false if ctx is cancelled while waiting — the caller must then NOT
+// call end()/ok()/fail().
+func (g *usbGate) begin(ctx context.Context) bool {
+	for {
+		g.bmu.Lock()
+		wait := time.Until(g.nextOK)
+		g.bmu.Unlock()
+		if wait > 0 {
+			log.Printf("[capture] usb gate: waiting %s before next open", wait.Round(time.Second))
+			if !sleepCtx(ctx, wait) {
+				return false
+			}
+		}
+		select {
+		case g.sem <- struct{}{}:
+		case <-ctx.Done():
+			return false
+		}
+		g.bmu.Lock()
+		ready := !time.Now().Before(g.nextOK)
+		g.bmu.Unlock()
+		if ready {
+			return true
+		}
+		<-g.sem // a fail() pushed nextOK out while we queued; release and re-wait
+	}
+}
+
+// end releases the serial window.
+func (g *usbGate) end() { <-g.sem }
+
+// ok clears the penalty after a successful enumerate or healthy run.
+func (g *usbGate) ok() {
+	g.bmu.Lock()
+	g.fails = 0
+	g.nextOK = time.Now()
+	g.bmu.Unlock()
+}
+
+// fail escalates the bus-wide backoff after a fast failure.
+func (g *usbGate) fail() {
+	g.bmu.Lock()
+	g.fails++
+	d := gateBase << (g.fails - 1)
+	if d <= 0 || d > gateMax { // <=0 guards the shift overflowing
+		d = gateMax
+	}
+	g.nextOK = time.Now().Add(d)
+	g.bmu.Unlock()
+	log.Printf("[capture] usb gate: backing off %s (%d consecutive fast failures)", d, g.fails)
+}
 
 // run reconciles on startup, on config NOTIFYs, and on a periodic tick. The tick
 // also runs a health check: if a dongle's pipeline stays down (e.g. it dropped
@@ -157,10 +229,9 @@ func (m *manager) enumerateOnce(ctx context.Context) []sdrDevice {
 			_ = m.d.PruneDevices(ctx, serials)
 			return devs
 		}
-		log.Printf("[capture] no SDRs detected; retrying in 5s")
-		if !sleepCtx(ctx, 5*time.Second) {
-			return nil
-		}
+		// No spacing here: enumerateRTL opens the bus through the gate, which
+		// already paces retries (and backs off when the bus is struggling).
+		log.Printf("[capture] no SDRs detected; retrying")
 	}
 	return nil
 }
@@ -295,26 +366,34 @@ func superviseSDR(ctx context.Context, d Sink, source string, p scanParams, up *
 		msgtype = "scm,scm+,idm"
 	}
 
+	// Each iteration opens the device through the bus gate, which paces opens with
+	// a bus-wide escalating backoff (see usbGate) so a marginal dongle is never
+	// reset faster than USB can recover. We judge a run healthy by how long it
+	// stayed up: a sustained run resets the penalty, a fast exit escalates it.
 	for ctx.Err() == nil {
 		up.Store(false)
+		if !bus.begin(ctx) { // waits out any backoff, then takes the serial window
+			return
+		}
+		// Time the run from AFTER the gate opens the device — NOT before begin(),
+		// or the backoff wait would count toward gateHealthy and a fast-failing
+		// open would look "healthy" and wrongly reset the penalty.
+		start := time.Now()
 		log.Printf("[capture] source=%s (dev %s) starting rtl_tcp on %s (freq=%s gain=%s)", source, devIdx, server, freq, p.gain)
 		tcpArgs := []string{"-d", devIdx, "-a", "127.0.0.1", "-p", itoa(port), "-P", ppm}
 		if p.gain != "" {
 			tcpArgs = append(tcpArgs, "-g", p.gain)
 		}
-		openLock.Lock()
 		tcp := exec.CommandContext(ctx, "rtl_tcp", tcpArgs...)
 		tcp.Stderr = prefixWriter("rtl_tcp:" + source)
 		if err := tcp.Start(); err != nil {
-			openLock.Unlock()
 			log.Printf("[capture] source=%s rtl_tcp start: %v", source, err)
-			if !sleepCtx(ctx, 5*time.Second) {
-				return
-			}
+			bus.fail()
+			bus.end()
 			continue
 		}
-		time.Sleep(2 * time.Second) // hold the open lock while rtl_tcp binds the device
-		openLock.Unlock()
+		time.Sleep(2 * time.Second) // hold the serial window while rtl_tcp binds the device
+		bus.end()
 
 		amrArgs := []string{"-server=" + server, "-msgtype=" + msgtype, "-format=json", "-centerfreq=" + freq}
 		if p.filt != "" {
@@ -326,9 +405,7 @@ func superviseSDR(ctx context.Context, d Sink, source string, p scanParams, up *
 		if err := amr.Start(); err != nil {
 			log.Printf("[capture] source=%s rtlamr start: %v", source, err)
 			_ = tcp.Process.Kill()
-			if !sleepCtx(ctx, 5*time.Second) {
-				return
-			}
+			bus.fail()
 			continue
 		}
 		up.Store(true) // pipeline live; healthy even if the meters are quiet
@@ -339,12 +416,14 @@ func superviseSDR(ctx context.Context, d Sink, source string, p scanParams, up *
 		_ = tcp.Process.Kill()
 		_ = tcp.Wait()
 		if ctx.Err() != nil {
-			return
+			return // a cancel (shutdown/config change) is neutral to the gate
 		}
-		log.Printf("[capture] source=%s pipeline exited; restarting in 5s", source)
-		if !sleepCtx(ctx, 5*time.Second) {
-			return
+		if time.Since(start) >= gateHealthy {
+			bus.ok() // came up and stayed up — clear the penalty
+		} else {
+			bus.fail() // never really came up — escalate the bus backoff
 		}
+		log.Printf("[capture] source=%s pipeline exited; will reopen via gate", source)
 	}
 }
 

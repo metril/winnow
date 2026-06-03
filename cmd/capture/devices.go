@@ -33,15 +33,24 @@ var (
 // device list before it tries to open device 0, so we read that list and stop
 // as soon as we've seen the reported count (then it's killed by the timeout).
 func enumerateRTL(ctx context.Context) []sdrDevice {
+	// rtl_test opens device 0, which resets it — so enumeration is a USB open and
+	// goes through the same bus gate as capture. begin() uses the parent ctx (its
+	// backoff may be minutes) and must run BEFORE the 6s command timeout starts.
+	if !bus.begin(ctx) {
+		return nil
+	}
+	defer bus.end()
 	c, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(c, "rtl_test")
 	out, err := cmd.StderrPipe()
 	if err != nil {
+		bus.fail()
 		return nil
 	}
 	if err := cmd.Start(); err != nil {
 		log.Printf("[capture] rtl_test not available: %v", err)
+		bus.fail()
 		return nil
 	}
 	var devs []sdrDevice
@@ -73,6 +82,13 @@ func enumerateRTL(ctx context.Context) []sdrDevice {
 		devs[i].tuner = tuner
 	}
 	assignSources(devs)
+	// Enumeration success is a WEAK signal — rtl_test can list a dongle that's
+	// still too sick for rtl_tcp to capture (we've seen it enumerate as "dev0"
+	// mid-failure). So a found device is neutral to the backoff; only a sustained
+	// capture run (superviseSDR) clears the penalty. An empty bus still backs off.
+	if len(devs) == 0 {
+		bus.fail()
+	}
 	return devs
 }
 
@@ -114,8 +130,8 @@ func resolveDevices(ctx context.Context) []sdrDevice {
 				log.Printf("[capture] auto-detected %d SDR(s): %s", len(devs), describe(devs))
 				return devs
 			}
-			log.Printf("[capture] no SDRs detected; retrying in 5s")
-			time.Sleep(5 * time.Second)
+			// enumerateRTL paces itself via the bus gate; no extra sleep needed.
+			log.Printf("[capture] no SDRs detected; retrying")
 		}
 		return nil
 	}
