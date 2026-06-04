@@ -186,7 +186,8 @@ export const api = {
 export type StreamEvent =
   | { type: "reading"; endpoint_id: number; source: string }
   | { type: "reference"; power: number }
-  | { type: "config" };
+  | { type: "config" }
+  | { type: "agent" };
 
 // useStream subscribes to /api/stream (SSE) and invokes onEvent for each push.
 export function useStream(onEvent: (e: StreamEvent) => void) {

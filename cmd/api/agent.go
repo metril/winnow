@@ -49,7 +49,9 @@ const (
 func newPendingAgents() *pendingAgents { return &pendingAgents{m: map[string]*pendingAgent{}} }
 
 // add records (or refreshes) a connection attempt from an unauthorized key.
-func (p *pendingAgents) add(pub [32]byte, name, addr string) {
+// Returns true only when the key was newly added (not a refresh of an existing
+// entry) so callers can avoid re-notifying on a 5s-retry flapping agent.
+func (p *pendingAgents) add(pub [32]byte, name, addr string) bool {
 	key := agentwire.EncodeKey(pub)
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -60,7 +62,7 @@ func (p *pendingAgents) add(pub [32]byte, name, addr string) {
 		if name != "" {
 			e.Name = name
 		}
-		return
+		return false
 	}
 	p.gcLocked(now)
 	if len(p.m) >= pendingMax {
@@ -76,6 +78,7 @@ func (p *pendingAgents) add(pub [32]byte, name, addr string) {
 		PubKey: key, Fingerprint: agentwire.Fingerprint(pub),
 		Name: name, RemoteAddr: addr, FirstSeen: now, LastSeen: now,
 	}
+	return true
 }
 
 func (p *pendingAgents) remove(pubkey string) {
@@ -248,7 +251,9 @@ func (s *server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		return "", false
 	}
 	onUnauthorized := func(pub [32]byte, name string) {
-		s.pending.add(pub, name, r.RemoteAddr) // surface for one-click approval
+		if s.pending.add(pub, name, r.RemoteAddr) { // newly pending → refresh the dashboard
+			s.broker.publish([]byte(`{"type":"agent"}`))
+		}
 	}
 	sess, label, err := agentwire.ServerHandshake(conn, s.agent.pub, s.agent.priv, authorized, onUnauthorized)
 	if err != nil {
@@ -257,6 +262,8 @@ func (s *server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[api] agent %q connected", label)
+	s.broker.publish([]byte(`{"type":"agent"}`)) // a dongle just came online
+	defer s.broker.publish([]byte(`{"type":"agent"}`))
 
 	// First app message must be the hello carrying the agent's dongles.
 	hello, err := sess.RecvMsg(conn)

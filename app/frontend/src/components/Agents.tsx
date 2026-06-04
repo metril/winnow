@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { Satellite, KeyRound, ShieldCheck, Copy, Check, Trash2, Terminal, Plug, Clock, UserCheck } from "lucide-react";
-import { api, AgentsResp } from "../api";
+import { api, AgentsResp, PendingAgent } from "../api";
 import { useLive } from "../live";
 import { useFetch } from "../fetch";
 import { shortTs, copyText } from "../util";
 import { Page } from "./shell";
-import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, InfoHint, EmptyState, Skeleton, useToast } from "../ui";
+import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, InfoHint, EmptyState, Skeleton, Dialog, useToast } from "../ui";
 
 function Copyable({ value, mono = true }: { value: string; mono?: boolean }) {
   const [done, setDone] = useState(false);
@@ -24,8 +24,8 @@ function Copyable({ value, mono = true }: { value: string; mono?: boolean }) {
 }
 
 export default function Agents() {
-  const { configVersion } = useLive();
-  const { data, reload } = useFetch(api.agents, [configVersion]);
+  const { configVersion, agentVersion } = useLive();
+  const { data, reload } = useFetch(api.agents, [configVersion, agentVersion]);
   return (
     <Page title="Remote agents" breadcrumb="System">
       {!data ? <Card><CardBody><Skeleton className="h-40" /></CardBody></Card> : <Inner data={data} reload={reload} />}
@@ -37,6 +37,7 @@ function Inner({ data, reload }: { data: AgentsResp; reload: () => void }) {
   const toast = useToast();
   const [label, setLabel] = useState("");
   const [pubkey, setPubkey] = useState("");
+  const [confirm, setConfirm] = useState<PendingAgent | null>(null);
 
   const host = window.location.hostname;
   const url = `wss://${host}:8443/api/agent/ws`;
@@ -53,9 +54,12 @@ function Inner({ data, reload }: { data: AgentsResp; reload: () => void }) {
     return api.authorizeAgent(label.trim() || "agent", pubkey.trim())
       .then(() => { setLabel(""); setPubkey(""); reload(); });
   };
-  const approve = (p: { pubkey: string; name: string }) =>
-    api.authorizeAgent(p.name || "agent", p.pubkey)
-      .then(() => { toast.show(`Approved ${p.name || "agent"}`, "good"); reload(); });
+  const approve = () => {
+    if (!confirm) return Promise.resolve();
+    const p = confirm;
+    return api.authorizeAgent(p.name || "agent", p.pubkey)
+      .then(() => { setConfirm(null); toast.show(`Approved ${p.name || "agent"}`, "good"); reload(); });
+  };
   const revoke = (pk: string, lbl: string) =>
     api.revokeAgent(pk).then(() => { toast.show(`Revoked ${lbl}`, "good"); reload(); });
 
@@ -99,7 +103,7 @@ function Inner({ data, reload }: { data: AgentsResp; reload: () => void }) {
                 <Badge tone="gold">{p.name || "agent"}</Badge>
                 <span className="mono truncate text-micro text-tertiary">{p.fingerprint}</span>
                 <span className="text-micro text-tertiary">from {p.remote_addr} · {shortTs(p.first_seen)}</span>
-                <Button className="ml-auto" size="sm" variant="primary" icon={<UserCheck size={14} />} onClick={() => approve(p)} success="Approved">Approve</Button>
+                <Button className="ml-auto" size="sm" variant="primary" icon={<UserCheck size={14} />} onClick={() => setConfirm(p)}>Approve</Button>
               </div>
             ))}
           </CardBody>
@@ -144,6 +148,18 @@ function Inner({ data, reload }: { data: AgentsResp; reload: () => void }) {
             </div>}
         </CardBody>
       </Card>
+
+      <Dialog open={!!confirm} onClose={() => setConfirm(null)} title={`Approve agent ${confirm?.name || "agent"}`}
+        footer={<>
+          <Button variant="ghost" onClick={() => setConfirm(null)}>Cancel</Button>
+          <Button variant="primary" onClick={approve} success="Approved">Approve</Button>
+        </>}>
+        Allow this agent to connect and stream readings to this server?
+        <div className="mt-3 space-y-1 text-micro text-tertiary">
+          <div>fingerprint <span className="mono text-secondary">{confirm?.fingerprint}</span></div>
+          <div>from {confirm?.remote_addr} · first seen {confirm ? shortTs(confirm.first_seen) : ""}</div>
+        </div>
+      </Dialog>
     </>
   );
 }

@@ -12,9 +12,11 @@ interface Live {
   powerHistory: PowerSample[];     // rolling buffer for the hero sparkline
   readings: ReadingSample[];       // rolling buffer of recent reading events
   configVersion: number;           // bumps on a `config` SSE event
+  agentVersion: number;            // bumps on an `agent` SSE event (pending/connect)
+  connectedAt: number;             // epoch ms when this client connected (reset on refresh)
 }
 
-const Ctx = createContext<Live>({ power: null, powerHistory: [], readings: [], configVersion: 0 });
+const Ctx = createContext<Live>({ power: null, powerHistory: [], readings: [], configVersion: 0, agentVersion: 0, connectedAt: 0 });
 export const useLive = () => useContext(Ctx);
 
 const MAX_POWER = 180;   // ~ last N monitored-power samples
@@ -25,6 +27,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   const [powerHistory, setPowerHistory] = useState<PowerSample[]>([]);
   const [readings, setReadings] = useState<ReadingSample[]>([]);
   const [configVersion, setConfigVersion] = useState(0);
+  const [agentVersion, setAgentVersion] = useState(0);
+  const [connectedAt] = useState(() => Date.now());
 
   // coalesce bursts of reading events into one commit per animation frame
   const pending = useRef<ReadingSample[]>([]);
@@ -48,12 +52,14 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       if (!raf.current) raf.current = requestAnimationFrame(flush);
     } else if (e.type === "config") {
       setConfigVersion((c) => c + 1);
+    } else if (e.type === "agent") {
+      setAgentVersion((c) => c + 1);
     }
   });
 
   useEffect(() => () => { if (raf.current) cancelAnimationFrame(raf.current); }, []);
 
-  return <Ctx.Provider value={{ power, powerHistory, readings, configVersion }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ power, powerHistory, readings, configVersion, agentVersion, connectedAt }}>{children}</Ctx.Provider>;
 }
 
 // perMin counts reading events in the last 60s (optionally for one source).
