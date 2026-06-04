@@ -5,7 +5,7 @@ import { useLive } from "../live";
 import { useFetch } from "../fetch";
 import { fmt } from "../util";
 import { Page } from "./shell";
-import { Card, CardHeader, CardBody, Button, Segmented, Badge, EmptyState, Skeleton, Table, Th, Td } from "../ui";
+import { Card, CardHeader, CardBody, Button, Segmented, Badge, EmptyState, Skeleton, Table, Th, Td, InfoHint } from "../ui";
 import { OverlayChart, ConfidenceBar } from "./charts";
 import { TrackStar, PublishToggle } from "./MeterActions";
 
@@ -40,6 +40,7 @@ export default function Identify() {
         {floor != null && floor > 0 && <Badge tone="brand">floor {fmt(floor)} W</Badge>}
         <Segmented options={RANGES} value={hours} onChange={setHours} />
         <Button variant="primary" icon={<Crosshair size={15} />} onClick={reload} success="Analyzed">Analyze</Button>
+        <InfoHint>Re-runs the correlation over the selected window: ranks every meter by how well its usage tracks your monitored power. Switch a known load on/off first, then Analyze.</InfoHint>
       </>}>
 
       {noSet && (
