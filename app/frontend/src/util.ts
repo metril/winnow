@@ -30,6 +30,30 @@ export const bytes = (n: number | null | undefined): string => {
   return `${v.toFixed(v >= 100 ? 0 : 1)} ${u[i]}`;
 };
 
+// Copy text to the clipboard, with a fallback for non-secure contexts. The
+// dashboard is typically served over plain HTTP on a LAN, where
+// navigator.clipboard is undefined — so fall back to a hidden textarea +
+// execCommand. Rejects if neither path works (caller can toast the failure).
+export const copyText = (value: string): Promise<void> => {
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value);
+  return new Promise((resolve, reject) => {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error("copy command failed"));
+    } catch (e) {
+      reject(e);
+    }
+  });
+};
+
 // compact span between two ISO timestamps, e.g. "12d 4h"
 export const spanOf = (a: string | null, b: string | null): string => {
   if (!a || !b) return "–";
