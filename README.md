@@ -124,15 +124,17 @@ Pairing (the SSH `authorized_keys` model), all from **System → Remote agents**
 
 1. On the main host, the app auto-generates its keypair + TLS cert on first boot.
    Copy the **server public key** and **agent URL** from the dashboard.
-2. On the remote host, build the image (`docker build -f capture/Dockerfile -t
-   winnow-capture .`) and run it in agent mode:
+2. On the remote host, run the capture image in agent mode. The simplest path is
+   the ready-made [`compose.agent.yaml`](compose.agent.yaml) — copy it over with a
+   `.env` holding `AGENT_URL` / `AGENT_SERVER_KEY`, then
+   `docker compose -f compose.agent.yaml up -d`. Or run it directly:
    ```bash
    docker run -d --name winnow-agent --restart unless-stopped \
      --device /dev/bus/usb:/dev/bus/usb -v winnow-agent-key:/data \
      -e AGENT_URL=wss://<main-host>:8443/api/agent/ws \
      -e AGENT_SERVER_KEY=<server public key> \
      -e AGENT_NAME=garage \
-     winnow-capture
+     ghcr.io/metril/winnow-capture:latest
    ```
    (Same host prerequisites as below — blacklist the DVB-T driver, USB passthrough.)
 3. On first start the agent **prints its own public key**. Paste it into

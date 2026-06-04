@@ -1,0 +1,41 @@
+# Remote SDR agent — runs ONLY the capture image in agent mode on a host that has
+# the dongle. It enumerates local dongles, decodes locally, and streams readings to
+# the main winnow app over an encrypted, mutually-authenticated WebSocket. No DB and
+# no app run here; the main stack (compose.yaml) lives on the other host.
+#
+# Setup (see README "Remote SDRs"):
+#   1. In the dashboard on the MAIN host: System → Remote agents. Copy the
+#      SERVER PUBLIC KEY and the AGENT URL (wss://<main-host>:8443/api/agent/ws).
+#   2. Put them in a `.env` next to this file (see the keys below), then:
+#        docker compose -f compose.agent.yaml up -d
+#   3. The agent prints ITS OWN public key on first start:
+#        docker compose -f compose.agent.yaml logs agent
+#      Paste that key into Authorized agents in the dashboard. It connects within
+#      seconds and its dongles appear in the inventory/coverage.
+#
+# The agent identity key persists in the named volume, so restarts don't need
+# re-authorizing. Use WINNOW_TAG=edge until the fix is released to :latest.
+services:
+  agent:
+    image: ghcr.io/metril/winnow-capture:${WINNOW_TAG:-latest}
+    restart: unless-stopped
+    # The dongle must be visible to the container.
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    volumes:
+      # Persists /data/agent.key — the agent's Curve25519 identity. Without this
+      # the key regenerates on each restart and must be re-authorized.
+      - winnow-agent-key:/data
+    environment:
+      # Required ------------------------------------------------------------
+      AGENT_URL: ${AGENT_URL:?set to wss://<main-host>:8443/api/agent/ws}
+      AGENT_SERVER_KEY: ${AGENT_SERVER_KEY:?copy the server public key from the dashboard}
+      # Optional ------------------------------------------------------------
+      AGENT_NAME: ${AGENT_NAME:-agent}            # namespaces this agent's sources in the dashboard
+      AGENT_SERVER_FINGERPRINT: ${AGENT_SERVER_FINGERPRINT:-}  # pin the outer TLS cert (from dashboard)
+    # Optional CPU pinning on big.LITTLE SoCs (e.g. RK3588 performance cores "4-7").
+    # Leave blank/omit on amd64 or uniform CPUs — a wrong cpuset starves rtlamr
+    # ("not keeping up with rtl_tcp").
+    cpuset: "${CAPTURE_CPUSET:-}"
+volumes:
+  winnow-agent-key:
