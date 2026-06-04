@@ -68,7 +68,7 @@ export default function Meters() {
               <Segmented options={[{ value: "delta", label: "usage" }, { value: "cumulative", label: "cumulative" }]} value={mode} onChange={setMode as any} />
               <Button size="sm" variant="ghost" icon={<X size={14} />} onClick={() => setSelected(new Set())}>clear</Button>
             </>} />
-          <CardBody>{plot.data && <MultiSeriesChart data={plot.data} connectNulls={mode === "cumulative"} />}</CardBody>
+          <CardBody>{plot.data && <MultiSeriesChart data={plot.data} connectNulls />}</CardBody>
         </Card>
       )}
 

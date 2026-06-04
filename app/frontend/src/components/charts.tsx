@@ -97,7 +97,7 @@ export function OverlayChart({ reference, meters, labels, height = 260 }:
           <Tooltip labelFormatter={(t) => shortTs(new Date(t as number).toISOString())} formatter={(v: any) => fmt(v)} contentStyle={th.tooltipStyle} />
           <Area yAxisId="L" dataKey="__plug" name="monitored power (W)" stroke={th.gold} fill="url(#plugfill)" strokeWidth={2} dot={false} isAnimationActive={false} />
           {keys.map((k, i) => (
-            <Line yAxisId="R" key={k} type="monotone" dataKey={k} name={labels?.[k] || `meter ${k}`} stroke={th.palette[(i + 1) % th.palette.length]} dot={false} strokeWidth={2} isAnimationActive={false} />
+            <Line yAxisId="R" key={k} type="monotone" dataKey={k} name={labels?.[k] || `meter ${k}`} stroke={th.palette[(i + 1) % th.palette.length]} dot={false} strokeWidth={2} isAnimationActive={false} connectNulls />
           ))}
         </ComposedChart>
       </ResponsiveContainer>

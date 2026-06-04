@@ -126,8 +126,11 @@ func (d *DB) MultiSeries(ctx context.Context, ids []int64, since, until *time.Ti
 		if err := rows.Scan(&id, &b, &v); err != nil {
 			return nil, err
 		}
-		if v == nil || *v < 0 {
-			continue // gap (first bucket / counter reset) — omit so the line breaks
+		if v == nil || *v <= 0 {
+			// Omit no-data, counter-reset, AND no-movement buckets (delta 0) — a
+			// slow-ticking counter at fine buckets yields many 0s that would draw the
+			// line diving to zero. Charts connectNulls across these gaps instead.
+			continue
 		}
 		key := fmt.Sprintf("%d", id)
 		out[key] = append(out[key], MultiSeriesPoint{Bucket: b.UTC().Format(time.RFC3339Nano), Value: *v})
