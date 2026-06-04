@@ -53,8 +53,8 @@ export function Sparkline({ data, color, height = 36 }: { data: number[]; color?
   );
 }
 
-export function MultiSeriesChart({ data, labels, height = 240 }:
-  { data: SeriesMap; labels?: Record<string, string>; height?: number }) {
+export function MultiSeriesChart({ data, labels, height = 240, connectNulls = false }:
+  { data: SeriesMap; labels?: Record<string, string>; height?: number; connectNulls?: boolean }) {
   const th = useChartTheme();
   const keys = Object.keys(data);
   const merged = mergeRows(keys.map((k) => ({ key: k, pts: data[k] })));
@@ -68,7 +68,7 @@ export function MultiSeriesChart({ data, labels, height = 240 }:
           <YAxis tickFormatter={(v) => fmt(v)} {...th.axisY} />
           <Tooltip labelFormatter={(t) => shortTs(new Date(t as number).toISOString())} formatter={(v: any) => fmt(v)} contentStyle={th.tooltipStyle} />
           {keys.map((k, i) => (
-            <Line key={k} type="monotone" dataKey={k} name={labels?.[k] || k} stroke={th.palette[i % th.palette.length]} dot={false} strokeWidth={2} isAnimationActive={false} />
+            <Line key={k} type="monotone" dataKey={k} name={labels?.[k] || k} stroke={th.palette[i % th.palette.length]} dot={false} strokeWidth={2} isAnimationActive={false} connectNulls={connectNulls} />
           ))}
         </ComposedChart>
       </ResponsiveContainer>

@@ -40,10 +40,20 @@ func (d *DB) MeterSeries(ctx context.Context, id int64, since, until *time.Time,
 		return s, err
 	}
 
-	bq := fmt.Sprintf(`SELECT time_bucket('%s', ts) AS b,
-	                          max(consumption)-min(consumption) AS delta,
-	                          count(*) AS n
-	                   FROM readings %s GROUP BY b ORDER BY b`, bucketInterval(bucket), where)
+	// Per-bucket usage = the rise in the cumulative counter SINCE the previous
+	// bucket (lag), not max-min WITHIN a bucket — the latter is 0 whenever a bucket
+	// holds a single packet, which collapsed sparse meters' charts to zero. The
+	// first bucket (lag NULL) and any negative step (counter reset) yield a NULL
+	// delta, which the chart renders as a gap rather than a dive to 0.
+	bq := fmt.Sprintf(`WITH b AS (
+	                     SELECT time_bucket('%s', ts) AS bkt,
+	                            max(consumption) AS cmax,
+	                            count(*) AS n
+	                     FROM readings %s GROUP BY bkt)
+	                   SELECT bkt,
+	                          cmax - lag(cmax) OVER (ORDER BY bkt) AS delta,
+	                          n
+	                   FROM b ORDER BY bkt`, bucketInterval(bucket), where)
 	drows, err := d.pool.Query(ctx, bq, args...)
 	if err != nil {
 		return s, err
@@ -55,6 +65,9 @@ func (d *DB) MeterSeries(ctx context.Context, id int64, since, until *time.Time,
 		var n int64
 		if err := drows.Scan(&b, &delta, &n); err != nil {
 			return s, err
+		}
+		if delta != nil && *delta < 0 {
+			delta = nil
 		}
 		s.Deltas = append(s.Deltas, model.Bucket{Bucket: b.UTC().Format(time.RFC3339Nano), Delta: delta, Packets: n})
 	}
@@ -74,10 +87,6 @@ func (d *DB) MultiSeries(ctx context.Context, ids []int64, since, until *time.Ti
 	if len(ids) == 0 {
 		return out, nil
 	}
-	val := "max(consumption)-min(consumption)"
-	if mode == "cumulative" {
-		val = "max(consumption)"
-	}
 	args := []any{ids}
 	where := "WHERE consumption IS NOT NULL AND endpoint_id = ANY($1)"
 	if since != nil {
@@ -88,9 +97,23 @@ func (d *DB) MultiSeries(ctx context.Context, ids []int64, since, until *time.Ti
 		args = append(args, *until)
 		where += fmt.Sprintf(" AND ts <= $%d", len(args))
 	}
-	q := fmt.Sprintf(`SELECT endpoint_id, time_bucket('%s', ts) AS b, %s AS v
-	                  FROM readings %s GROUP BY endpoint_id, b ORDER BY b`,
-		bucketInterval(bucket), val, where)
+	// cumulative: the bucket's max counter value. delta: the rise in that counter
+	// SINCE the previous bucket (lag), so a single-packet bucket still shows real
+	// usage instead of 0. A NULL/negative step (first bucket, or counter reset) is
+	// dropped so the chart shows a gap rather than diving to 0. See MeterSeries.
+	var q string
+	if mode == "cumulative" {
+		q = fmt.Sprintf(`SELECT endpoint_id, time_bucket('%s', ts) AS b, max(consumption) AS v
+		                  FROM readings %s GROUP BY endpoint_id, b ORDER BY b`,
+			bucketInterval(bucket), where)
+	} else {
+		q = fmt.Sprintf(`WITH b AS (
+		                   SELECT endpoint_id, time_bucket('%s', ts) AS bkt, max(consumption) AS cmax
+		                   FROM readings %s GROUP BY endpoint_id, bkt)
+		                 SELECT endpoint_id, bkt,
+		                        cmax - lag(cmax) OVER (PARTITION BY endpoint_id ORDER BY bkt) AS v
+		                 FROM b ORDER BY bkt`, bucketInterval(bucket), where)
+	}
 	rows, err := d.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -99,12 +122,15 @@ func (d *DB) MultiSeries(ctx context.Context, ids []int64, since, until *time.Ti
 	for rows.Next() {
 		var id int64
 		var b time.Time
-		var v float64
+		var v *float64
 		if err := rows.Scan(&id, &b, &v); err != nil {
 			return nil, err
 		}
+		if v == nil || *v < 0 {
+			continue // gap (first bucket / counter reset) — omit so the line breaks
+		}
 		key := fmt.Sprintf("%d", id)
-		out[key] = append(out[key], MultiSeriesPoint{Bucket: b.UTC().Format(time.RFC3339Nano), Value: v})
+		out[key] = append(out[key], MultiSeriesPoint{Bucket: b.UTC().Format(time.RFC3339Nano), Value: *v})
 	}
 	return out, rows.Err()
 }
