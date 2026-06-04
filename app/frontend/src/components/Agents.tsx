@@ -1,15 +1,18 @@
 import { useState } from "react";
-import { Satellite, KeyRound, ShieldCheck, Copy, Check, Trash2, Terminal, Plug } from "lucide-react";
+import { Satellite, KeyRound, ShieldCheck, Copy, Check, Trash2, Terminal, Plug, Clock, UserCheck } from "lucide-react";
 import { api, AgentsResp } from "../api";
 import { useLive } from "../live";
 import { useFetch } from "../fetch";
-import { shortTs } from "../util";
+import { shortTs, copyText } from "../util";
 import { Page } from "./shell";
 import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, InfoHint, EmptyState, Skeleton, useToast } from "../ui";
 
 function Copyable({ value, mono = true }: { value: string; mono?: boolean }) {
   const [done, setDone] = useState(false);
-  const copy = () => navigator.clipboard.writeText(value).then(() => { setDone(true); setTimeout(() => setDone(false), 1500); });
+  const toast = useToast();
+  const copy = () => copyText(value)
+    .then(() => { setDone(true); setTimeout(() => setDone(false), 1500); })
+    .catch(() => toast.show("Couldn't copy — select and copy manually", "bad"));
   return (
     <div className="flex items-center gap-2 rounded-md border border-border bg-app/40 px-2.5 py-1.5">
       <span className={"min-w-0 flex-1 truncate text-small " + (mono ? "mono text-secondary" : "text-text")}>{value}</span>
@@ -41,9 +44,8 @@ function Inner({ data, reload }: { data: AgentsResp; reload: () => void }) {
     "docker run -d --name winnow-agent --restart unless-stopped \\",
     "  --device /dev/bus/usb:/dev/bus/usb -v winnow-agent-key:/data \\",
     `  -e AGENT_URL=${url} \\`,
-    `  -e AGENT_SERVER_KEY=${data.server_key} \\`,
     "  -e AGENT_NAME=garage \\",
-    "  winnow-capture",
+    "  ghcr.io/metril/winnow-capture:latest",
   ].join("\n");
 
   const authorize = () => {
@@ -51,6 +53,9 @@ function Inner({ data, reload }: { data: AgentsResp; reload: () => void }) {
     return api.authorizeAgent(label.trim() || "agent", pubkey.trim())
       .then(() => { setLabel(""); setPubkey(""); reload(); });
   };
+  const approve = (p: { pubkey: string; name: string }) =>
+    api.authorizeAgent(p.name || "agent", p.pubkey)
+      .then(() => { toast.show(`Approved ${p.name || "agent"}`, "good"); reload(); });
   const revoke = (pk: string, lbl: string) =>
     api.revokeAgent(pk).then(() => { toast.show(`Revoked ${lbl}`, "good"); reload(); });
 
@@ -77,12 +82,29 @@ function Inner({ data, reload }: { data: AgentsResp; reload: () => void }) {
 
       <Card>
         <CardHeader title="Run an agent" icon={<Terminal size={16} />}
-          subtitle="On the remote host: build the capture image from this repo (capture/Dockerfile, tag it winnow-capture), then run it. On first start it prints its public key — authorize it below." />
+          subtitle="On the remote host (same prerequisites: blacklist the DVB-T driver, USB passthrough), run the published capture image. It fetches the server key automatically (trust-on-first-use) and shows up under Pending approval below — no key copy/paste needed." />
         <CardBody>
           <pre className="overflow-x-auto rounded-md border border-border bg-app/40 p-3 text-micro leading-relaxed text-secondary">{runCmd}</pre>
           <div className="mt-2"><Copyable value={runCmd} mono={false} /></div>
         </CardBody>
       </Card>
+
+      {data.pending.length > 0 && (
+        <Card>
+          <CardHeader title="Pending approval" icon={<Clock size={16} />}
+            subtitle="Agents that connected but aren't authorized yet. Approve one to let it stream — it connects within seconds." />
+          <CardBody className="space-y-2">
+            {data.pending.map((p) => (
+              <div key={p.pubkey} className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-app/40 px-3 py-2">
+                <Badge tone="gold">{p.name || "agent"}</Badge>
+                <span className="mono truncate text-micro text-tertiary">{p.fingerprint}</span>
+                <span className="text-micro text-tertiary">from {p.remote_addr} · {shortTs(p.first_seen)}</span>
+                <Button className="ml-auto" size="sm" variant="primary" icon={<UserCheck size={14} />} onClick={() => approve(p)} success="Approved">Approve</Button>
+              </div>
+            ))}
+          </CardBody>
+        </Card>
+      )}
 
       <Card>
         <CardHeader title="Authorized agents" icon={<KeyRound size={16} />}

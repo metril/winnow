@@ -190,6 +190,7 @@ type hsInit struct {
 	ClientEphPub    string `json:"cepub"`
 	Nonce           string `json:"n"`
 	Box             string `json:"box"`
+	Label           string `json:"label,omitempty"` // self-reported agent name (unauthenticated hint for the pending-approval list)
 }
 type hsResp struct {
 	ServerEphPub string `json:"sepub"`
@@ -221,7 +222,9 @@ func open(nonceB64, boxB64 string, peerPub, myPriv [32]byte) ([]byte, bool) {
 }
 
 // ClientHandshake authenticates to the server and returns an encrypted session.
-func ClientHandshake(c Conn, clientPub, clientPriv, serverPub [32]byte) (*Session, error) {
+// label is a non-authenticated friendly name (the agent's AGENT_NAME) echoed into
+// the server's pending-approval list; it carries no trust.
+func ClientHandshake(c Conn, clientPub, clientPriv, serverPub [32]byte, label string) (*Session, error) {
 	ePub, ePriv, err := GenerateKey()
 	if err != nil {
 		return nil, err
@@ -232,7 +235,7 @@ func ClientHandshake(c Conn, clientPub, clientPriv, serverPub [32]byte) (*Sessio
 	}
 	init, err := json.Marshal(hsInit{
 		ClientStaticPub: EncodeKey(clientPub), ClientEphPub: EncodeKey(ePub),
-		Nonce: nonceB64, Box: boxB64,
+		Nonce: nonceB64, Box: boxB64, Label: label,
 	})
 	if err != nil {
 		return nil, err
@@ -269,8 +272,11 @@ func ClientHandshake(c Conn, clientPub, clientPriv, serverPub [32]byte) (*Sessio
 }
 
 // ServerHandshake verifies the client against `authorized` (which maps a client
-// static public key to a label) and returns the session and that label.
-func ServerHandshake(c Conn, serverPub, serverPriv [32]byte, authorized func(clientPub [32]byte) (string, bool)) (*Session, string, error) {
+// static public key to a label) and returns the session and that label. When the
+// client key is not authorized, onUnauthorized (if non-nil) is invoked with the
+// client's static key and its self-reported name before the rejection — letting
+// the caller surface it for one-click approval.
+func ServerHandshake(c Conn, serverPub, serverPriv [32]byte, authorized func(clientPub [32]byte) (string, bool), onUnauthorized func(clientPub [32]byte, name string)) (*Session, string, error) {
 	raw, err := c.ReadMsg()
 	if err != nil {
 		return nil, "", err
@@ -285,6 +291,9 @@ func ServerHandshake(c Conn, serverPub, serverPriv [32]byte, authorized func(cli
 	}
 	label, ok := authorized(cStaticPub)
 	if !ok {
+		if onUnauthorized != nil {
+			onUnauthorized(cStaticPub, init.Label)
+		}
 		return nil, "", errors.New("agent key not authorized")
 	}
 	cEphPub, err := DecodeKey(init.ClientEphPub)

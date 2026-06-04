@@ -6,9 +6,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -26,27 +29,93 @@ import (
 // session. Config is pushed by the server (no DB access from the remote host).
 func runAgent(ctx context.Context) {
 	name := env("AGENT_NAME", "agent")
-	url := os.Getenv("AGENT_URL")
-	serverKeyStr := os.Getenv("AGENT_SERVER_KEY")
-	if url == "" || serverKeyStr == "" {
-		log.Fatal("[agent] AGENT_URL and AGENT_SERVER_KEY are required in agent mode")
+	wsURL := os.Getenv("AGENT_URL")
+	if wsURL == "" {
+		log.Fatal("[agent] AGENT_URL is required in agent mode")
 	}
-	serverPub, err := agentwire.DecodeKey(serverKeyStr)
+	serverPub, err := resolveServerKey(wsURL)
 	if err != nil {
-		log.Fatalf("[agent] invalid AGENT_SERVER_KEY: %v", err)
+		log.Fatalf("[agent] could not determine the server key (set AGENT_SERVER_KEY, or make AGENT_URL reachable for trust-on-first-use): %v", err)
 	}
 	pub, priv := loadAgentKey()
 	log.Printf("[agent] %q identity public key: %s", name, agentwire.EncodeKey(pub))
-	log.Printf("[agent] authorize this key in the dashboard (fingerprint %s)", agentwire.Fingerprint(pub))
+	log.Printf("[agent] approve this agent in the dashboard (System → Remote agents); fingerprint %s", agentwire.Fingerprint(pub))
 
 	for ctx.Err() == nil {
-		if err := agentSession(ctx, name, url, pub, priv, serverPub); err != nil && ctx.Err() == nil {
+		if err := agentSession(ctx, name, wsURL, pub, priv, serverPub); err != nil && ctx.Err() == nil {
 			log.Printf("[agent] session ended: %v; reconnecting in 5s", err)
 		}
 		if !sleepCtx(ctx, 5*time.Second) {
 			return
 		}
 	}
+}
+
+// resolveServerKey returns the winnow server's static public key (which the agent
+// uses to authenticate the server). Resolution order:
+//  1. AGENT_SERVER_KEY env — explicit, fully verified.
+//  2. a previously-pinned key file (AGENT_SERVER_KEY_FILE, default /data/server.key).
+//  3. trust-on-first-use — fetch it from the server and pin it for next time.
+//
+// TOFU trusts the first connection (like SSH). Pin the outer TLS cert with
+// AGENT_SERVER_FINGERPRINT to authenticate the fetch, or set AGENT_SERVER_KEY for
+// strict verification.
+func resolveServerKey(wsURL string) ([32]byte, error) {
+	if s := os.Getenv("AGENT_SERVER_KEY"); s != "" {
+		return agentwire.DecodeKey(s)
+	}
+	path := env("AGENT_SERVER_KEY_FILE", "/data/server.key")
+	if b, err := os.ReadFile(path); err == nil {
+		if k, err := agentwire.DecodeKey(strings.TrimSpace(string(b))); err == nil {
+			return k, nil
+		}
+		log.Printf("[agent] pinned server key %s unreadable; re-fetching", path)
+	}
+	key, err := fetchServerKey(wsURL)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	if err := os.WriteFile(path, []byte(agentwire.EncodeKey(key)+"\n"), 0o600); err != nil {
+		log.Printf("[agent] WARNING: could not pin server key to %s (%v); it will be re-fetched each start. Mount a volume there.", path, err)
+	}
+	log.Printf("[agent] trust-on-first-use: pinned server key (fingerprint %s) to %s. "+
+		"For strict verification set AGENT_SERVER_KEY, and/or pin TLS with AGENT_SERVER_FINGERPRINT.",
+		agentwire.Fingerprint(key), path)
+	return key, nil
+}
+
+// fetchServerKey derives the https serverkey URL from the agent ws URL and GETs
+// the server's public key over the same (optionally cert-pinned) TLS client used
+// for the websocket.
+func fetchServerKey(wsURL string) ([32]byte, error) {
+	var zero [32]byte
+	u, err := url.Parse(wsURL)
+	if err != nil {
+		return zero, err
+	}
+	switch u.Scheme {
+	case "wss":
+		u.Scheme = "https"
+	case "ws":
+		u.Scheme = "http"
+	}
+	u.Path = "/api/agent/serverkey"
+	u.RawQuery = ""
+	resp, err := agentHTTPClient().Get(u.String())
+	if err != nil {
+		return zero, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return zero, fmt.Errorf("serverkey fetch: HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		ServerKey string `json:"server_key"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return zero, err
+	}
+	return agentwire.DecodeKey(body.ServerKey)
 }
 
 // loadAgentKey returns the agent's persistent Curve25519 keypair, from
@@ -127,7 +196,7 @@ func agentSession(ctx context.Context, name, url string, pub, priv, serverPub [3
 	defer c.Close(websocket.StatusNormalClosure, "")
 	conn := captureWS{c: c, ctx: sctx}
 
-	sess, err := agentwire.ClientHandshake(conn, pub, priv, serverPub)
+	sess, err := agentwire.ClientHandshake(conn, pub, priv, serverPub, name)
 	if err != nil {
 		return err
 	}

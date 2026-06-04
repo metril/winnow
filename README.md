@@ -120,31 +120,33 @@ encrypted and authenticated at the application layer (NaCl `box`/`secretbox`), s
 the data is confidential even through a TLS-terminating proxy. The app also exposes
 an optional self-signed TLS listener on `:8443` (defense-in-depth).
 
-Pairing (the SSH `authorized_keys` model), all from **System → Remote agents**:
+Pairing (the SSH `authorized_keys` model), managed from **System → Remote agents**:
 
-1. On the main host, the app auto-generates its keypair + TLS cert on first boot.
-   Copy the **server public key** and **agent URL** from the dashboard.
-2. On the remote host, run the capture image in agent mode. The simplest path is
-   the ready-made [`compose.agent.yaml`](compose.agent.yaml) — copy it over with a
-   `.env` holding `AGENT_URL` / `AGENT_SERVER_KEY`, then
-   `docker compose -f compose.agent.yaml up -d`. Or run it directly:
+1. On the remote host, run the capture image in agent mode — you only need the
+   **agent URL**. The simplest path is the ready-made
+   [`compose.agent.yaml`](compose.agent.yaml) — copy it over with a `.env` holding
+   `AGENT_URL`, then `docker compose -f compose.agent.yaml up -d`. Or run it directly:
    ```bash
    docker run -d --name winnow-agent --restart unless-stopped \
      --device /dev/bus/usb:/dev/bus/usb -v winnow-agent-key:/data \
      -e AGENT_URL=wss://<main-host>:8443/api/agent/ws \
-     -e AGENT_SERVER_KEY=<server public key> \
      -e AGENT_NAME=garage \
      ghcr.io/metril/winnow-capture:latest
    ```
    (Same host prerequisites as below — blacklist the DVB-T driver, USB passthrough.)
-3. On first start the agent **prints its own public key**. Paste it into
-   **Authorized agents** in the dashboard. It connects within seconds and its dongle
-   appears in the inventory and coverage like a local one, tunable per-dongle.
+   The agent **fetches and pins the server's public key on first connect**
+   (trust-on-first-use), so no key copy/paste is needed.
+2. In the dashboard the agent appears under **Pending approval** — click **Approve**.
+   It connects within seconds and its dongle appears in the inventory and coverage
+   like a local one, tunable per-dongle.
 
-Optional: pin the outer TLS with `-e AGENT_SERVER_FINGERPRINT=<TLS fingerprint
-shown in the dashboard>`. If you later add a reverse proxy, point `AGENT_URL` at it
-and drop the fingerprint — the app-layer auth is unchanged. The agent key persists
-in the `winnow-agent-key` volume, so restarts don't need re-authorizing.
+Hardening (optional): set `-e AGENT_SERVER_KEY=<server public key from the dashboard>`
+for strict server verification instead of trust-on-first-use, and/or pin the outer
+TLS with `-e AGENT_SERVER_FINGERPRINT=<TLS fingerprint shown in the dashboard>` (which
+also authenticates the key fetch). If you later add a reverse proxy, point `AGENT_URL`
+at it and drop the fingerprint — the app-layer auth is unchanged. The agent identity
+and the pinned server key persist in the `winnow-agent-key` volume, so restarts don't
+need re-approving.
 
 ## Configure Home Assistant (in the dashboard)
 

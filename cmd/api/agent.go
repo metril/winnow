@@ -5,15 +5,16 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/sha256"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"log"
 	"math/big"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -21,6 +22,86 @@ import (
 	"winnow/internal/agentwire"
 	"winnow/internal/config"
 )
+
+// pendingAgents tracks agents that connected but aren't yet authorized, so the
+// dashboard can show them for one-click approval. It's in-memory (unauthenticated
+// keys never touch the DB), bounded, and self-expiring: an agent retrying every 5s
+// keeps its entry fresh; one that gives up ages out.
+type pendingAgents struct {
+	mu sync.Mutex
+	m  map[string]*pendingAgent // keyed by base64 public key
+}
+
+type pendingAgent struct {
+	PubKey      string
+	Fingerprint string
+	Name        string
+	RemoteAddr  string
+	FirstSeen   time.Time
+	LastSeen    time.Time
+}
+
+const (
+	pendingTTL = 10 * time.Minute
+	pendingMax = 32
+)
+
+func newPendingAgents() *pendingAgents { return &pendingAgents{m: map[string]*pendingAgent{}} }
+
+// add records (or refreshes) a connection attempt from an unauthorized key.
+func (p *pendingAgents) add(pub [32]byte, name, addr string) {
+	key := agentwire.EncodeKey(pub)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	if e, ok := p.m[key]; ok {
+		e.LastSeen = now
+		e.RemoteAddr = addr
+		if name != "" {
+			e.Name = name
+		}
+		return
+	}
+	p.gcLocked(now)
+	if len(p.m) >= pendingMax {
+		oldestKey, oldest := "", now
+		for k, e := range p.m {
+			if oldestKey == "" || e.LastSeen.Before(oldest) {
+				oldestKey, oldest = k, e.LastSeen
+			}
+		}
+		delete(p.m, oldestKey)
+	}
+	p.m[key] = &pendingAgent{
+		PubKey: key, Fingerprint: agentwire.Fingerprint(pub),
+		Name: name, RemoteAddr: addr, FirstSeen: now, LastSeen: now,
+	}
+}
+
+func (p *pendingAgents) remove(pubkey string) {
+	p.mu.Lock()
+	delete(p.m, pubkey)
+	p.mu.Unlock()
+}
+
+func (p *pendingAgents) list() []pendingAgent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.gcLocked(time.Now())
+	out := make([]pendingAgent, 0, len(p.m))
+	for _, e := range p.m {
+		out = append(out, *e)
+	}
+	return out
+}
+
+func (p *pendingAgents) gcLocked(now time.Time) {
+	for k, e := range p.m {
+		if now.Sub(e.LastSeen) > pendingTTL {
+			delete(p.m, k)
+		}
+	}
+}
 
 // agentCrypto holds the app's static identity for the remote-agent channel.
 type agentCrypto struct {
@@ -160,12 +241,16 @@ func (s *server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		m, _ := s.d.GetSettings(ctx)
 		for _, a := range config.ParseAuthorizedAgents(m[config.KeyAgentAuthorized]) {
 			if k, err := agentwire.DecodeKey(a.PubKey); err == nil && k == pub {
+				s.pending.remove(agentwire.EncodeKey(pub)) // approved → no longer pending
 				return a.Label, true
 			}
 		}
 		return "", false
 	}
-	sess, label, err := agentwire.ServerHandshake(conn, s.agent.pub, s.agent.priv, authorized)
+	onUnauthorized := func(pub [32]byte, name string) {
+		s.pending.add(pub, name, r.RemoteAddr) // surface for one-click approval
+	}
+	sess, label, err := agentwire.ServerHandshake(conn, s.agent.pub, s.agent.priv, authorized, onUnauthorized)
 	if err != nil {
 		log.Printf("[api] agent handshake rejected: %v", err)
 		c.Close(websocket.StatusPolicyViolation, "unauthorized")
@@ -251,12 +336,51 @@ func (s *server) handleAgents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// agents that connected but aren't authorized yet — for one-click approval.
+	authedKeys := map[string]bool{}
+	for _, a := range auth {
+		authedKeys[a.PubKey] = true
+	}
+	type pendingView struct {
+		PubKey      string `json:"pubkey"`
+		Fingerprint string `json:"fingerprint"`
+		Name        string `json:"name"`
+		RemoteAddr  string `json:"remote_addr"`
+		FirstSeen   string `json:"first_seen"`
+		LastSeen    string `json:"last_seen"`
+	}
+	pending := []pendingView{}
+	for _, p := range s.pending.list() {
+		if authedKeys[p.PubKey] {
+			continue
+		}
+		pending = append(pending, pendingView{
+			PubKey: p.PubKey, Fingerprint: p.Fingerprint, Name: p.Name, RemoteAddr: p.RemoteAddr,
+			FirstSeen: p.FirstSeen.UTC().Format(time.RFC3339), LastSeen: p.LastSeen.UTC().Format(time.RFC3339),
+		})
+	}
 	writeJSON(w, map[string]any{
 		"server_key":         agentwire.EncodeKey(s.agent.pub),
 		"server_fingerprint": agentwire.Fingerprint(s.agent.pub),
 		"tls_fingerprint":    s.agent.tlsFP,
 		"authorized":         auth,
 		"remotes":            remotes,
+		"pending":            pending,
+	})
+}
+
+// handleAgentServerKey returns the server's static public key so an agent that
+// wasn't handed AGENT_SERVER_KEY can trust-on-first-use pin it. The key is public
+// (it only authenticates the server to agents), so this is intentionally
+// unauthenticated; the optional cert-pinned TLS in front protects the fetch.
+func (s *server) handleAgentServerKey(w http.ResponseWriter, r *http.Request) {
+	if s.agent == nil {
+		http.Error(w, "agent channel not initialized", 503)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"server_key":         agentwire.EncodeKey(s.agent.pub),
+		"server_fingerprint": agentwire.Fingerprint(s.agent.pub),
 	})
 }
 
@@ -288,6 +412,7 @@ func (s *server) handleAuthorizeAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	s.pending.remove(body.PubKey) // approved → drop from the pending list
 	writeJSON(w, map[string]any{"ok": true})
 }
 

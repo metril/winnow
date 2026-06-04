@@ -22,9 +22,10 @@ import (
 var distFS embed.FS
 
 type server struct {
-	d      *db.DB
-	broker *broker
-	agent  *agentCrypto
+	d       *db.DB
+	broker  *broker
+	agent   *agentCrypto
+	pending *pendingAgents
 }
 
 func main() {
@@ -37,7 +38,7 @@ func main() {
 		log.Printf("[api] schema init: %v", err)
 	}
 
-	s := &server{d: d, broker: newBroker()}
+	s := &server{d: d, broker: newBroker(), pending: newPendingAgents()}
 	go s.broker.run(ctx, d) // LISTEN → SSE fan-out
 
 	if ac, err := ensureAgentCrypto(ctx, d); err != nil {
@@ -127,6 +128,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/devices/{serial}", s.handlePutDevice)
 
 	mux.HandleFunc("GET /api/agent/ws", s.handleAgentWS)
+	mux.HandleFunc("GET /api/agent/serverkey", s.handleAgentServerKey)
 	mux.HandleFunc("GET /api/agents", s.handleAgents)
 	mux.HandleFunc("POST /api/agents", s.handleAuthorizeAgent)
 	mux.HandleFunc("POST /api/agents/revoke", s.handleRevokeAgent)
