@@ -107,7 +107,7 @@ type regrRow struct {
 // linear regression of per-minute delta vs aggregate power — which yields the
 // unit multiplier (slope), the unmonitored baseline (intercept), and a floor
 // check. Returns rows + the monitored floor (W). Floor is a soft down-rank.
-func (d *DB) CorrelationVsReference(ctx context.Context, entities []string, start, end time.Time) ([]model.CorrRow, float64, error) {
+func (d *DB) CorrelationVsReference(ctx context.Context, entities []string, start, end time.Time, bucketMin int) ([]model.CorrRow, float64, error) {
 	base, err := d.Correlation(ctx, start, end)
 	if err != nil {
 		return nil, 0, err
@@ -116,28 +116,45 @@ func (d *DB) CorrelationVsReference(ctx context.Context, entities []string, star
 	if len(entities) == 0 {
 		return base, 0, nil
 	}
+	if bucketMin <= 0 {
+		bucketMin = 1
+	}
+	bucketHours := float64(bucketMin) / 60.0
 
+	// Compare ENERGY per bucket on both sides. Reference: integrate per-minute
+	// monitored power (W) over the bucket → Wh. Meter: the rise in the cumulative
+	// counter SINCE the previous bucket (cross-bucket delta) — a single packet per
+	// bucket still yields real consumption, where within-bucket max-min was 0.
 	reg := map[int64]regrRow{}
 	rows, err := d.pool.Query(ctx, `
 WITH per_entity AS (
-  SELECT time_bucket_gapfill('1 minute', ts) AS b, entity_id, locf(avg(power_w)) AS w
+  SELECT time_bucket_gapfill('1 minute', ts) AS mt, entity_id, locf(avg(power_w)) AS w
   FROM reference_samples
   WHERE entity_id = ANY($3) AND ts >= $1 AND ts <= $2
-  GROUP BY b, entity_id),
-ref AS (SELECT b, sum(coalesce(w,0)) AS power FROM per_entity GROUP BY b),
+  GROUP BY mt, entity_id),
+per_min AS (SELECT mt, sum(coalesce(w,0)) AS w FROM per_entity GROUP BY mt),
+ref AS (
+  SELECT time_bucket(make_interval(mins => $4), mt) AS b, sum(w)/60.0 AS energy_wh
+  FROM per_min GROUP BY b),
+mb AS (
+  SELECT endpoint_id, time_bucket(make_interval(mins => $4), bucket) AS b, max(max_c) AS cmax
+  FROM readings_1m WHERE bucket >= $1 AND bucket <= $2
+  GROUP BY endpoint_id, b),
 m AS (
-  SELECT endpoint_id, bucket AS b, (max_c - min_c) AS delta
-  FROM readings_1m
-  WHERE bucket >= $1 AND bucket <= $2)
+  SELECT endpoint_id, b,
+         (CASE WHEN cmax - lag(cmax) OVER (PARTITION BY endpoint_id ORDER BY b) >= 0
+               THEN cmax - lag(cmax) OVER (PARTITION BY endpoint_id ORDER BY b) END) AS delta
+  FROM mb)
 SELECT m.endpoint_id,
-       corr(m.delta, ref.power)            AS r,
-       regr_slope(m.delta, ref.power)      AS slope,
-       regr_intercept(m.delta, ref.power)  AS intercept,
-       regr_r2(m.delta, ref.power)         AS r2,
+       corr(m.delta, ref.energy_wh)            AS r,
+       regr_slope(m.delta, ref.energy_wh)      AS slope,
+       regr_intercept(m.delta, ref.energy_wh)  AS intercept,
+       regr_r2(m.delta, ref.energy_wh)         AS r2,
        percentile_cont(0.1) WITHIN GROUP (ORDER BY m.delta) AS p10
 FROM m JOIN ref USING (b)
+WHERE m.delta IS NOT NULL
 GROUP BY m.endpoint_id
-HAVING count(*) >= 5`, start, end, entities)
+HAVING count(*) >= 5`, start, end, entities, bucketMin)
 	if err == nil {
 		for rows.Next() {
 			var id int64
@@ -162,21 +179,23 @@ HAVING count(*) >= 5`, start, end, entities)
 			v := round(*rr.r2, 3)
 			base[i].R2 = &v
 		}
-		// calibration only makes sense for a positive relationship
+		// calibration only makes sense for a positive relationship. slope is in
+		// meter-units per Wh, so the multiplier (kWh per meter-unit) is
+		// 1/(1000·slope) — independent of the chosen bucket width.
 		if rr.slope != nil && *rr.slope > 0 {
 			slope := *rr.slope
 			s := round(slope, 6)
 			base[i].Slope = &s
-			// M = Wh per meter-unit = 1/(60·slope); suggested multiplier is kWh/unit
-			mult := round(1.0/(60000.0*slope), 8)
+			mult := round(1.0/(1000.0*slope), 8)
 			base[i].SuggestedMultiplier = &mult
 			if rr.intercept != nil {
-				bw := round(*rr.intercept/slope, 1) // unmonitored baseline (W)
+				// intercept: units/bucket → Wh/bucket (/slope) → W (/bucketHours)
+				bw := round((*rr.intercept/slope)/bucketHours, 1)
 				base[i].BaselineW = &bw
 			}
 			// floor check: meter's calibrated low-rate power ≥ monitored floor
 			if rr.p10 != nil && floor > 0 {
-				minW := *rr.p10 / slope // (units/min)/(units/min per W) = W
+				minW := (*rr.p10 / slope) / bucketHours // (units/bucket)→Wh/bucket→W
 				ok := minW >= 0.8*floor
 				base[i].FloorOK = &ok
 			}
@@ -247,7 +266,7 @@ func (d *DB) aggregateWindows(ctx context.Context, useRef bool, entities []strin
 	for _, w := range wins {
 		var ranked []model.CorrRow
 		if useRef {
-			ranked, _, err = d.CorrelationVsReference(ctx, entities, w.start, w.end)
+			ranked, _, err = d.CorrelationVsReference(ctx, entities, w.start, w.end, PickBucketMin(int(w.end.Sub(w.start).Minutes())))
 		} else {
 			ranked, err = d.Correlation(ctx, w.start, w.end)
 		}

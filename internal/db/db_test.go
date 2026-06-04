@@ -94,7 +94,7 @@ func TestCorrelationVsReference_RanksAndCalibrates(t *testing.T) {
 	start, end := seed(t, d)
 	entities := []string{"sensor.plug"}
 
-	ranking, floor, err := d.CorrelationVsReference(context.Background(), entities, start, end)
+	ranking, floor, err := d.CorrelationVsReference(context.Background(), entities, start, end, 1)
 	if err != nil {
 		t.Fatalf("corr: %v", err)
 	}
@@ -108,16 +108,55 @@ func TestCorrelationVsReference_RanksAndCalibrates(t *testing.T) {
 	if top.R == nil || *top.R < 0.95 {
 		t.Fatalf("expected r>=0.95 for tracking meter, got %v", top.R)
 	}
-	// meter delta = 0.1 * aggregate power  =>  regr_slope ≈ 0.1
-	if top.Slope == nil || *top.Slope < 0.08 || *top.Slope > 0.12 {
-		t.Fatalf("slope should recover ~0.1, got %v", top.Slope)
+	// energy basis at 1-min buckets: meter delta = 0.1*power, ref energy = power/60 Wh
+	// => regr_slope = 0.1 / (1/60) ≈ 6 (meter-units per Wh)
+	if top.Slope == nil || *top.Slope < 5 || *top.Slope > 7 {
+		t.Fatalf("slope should recover ~6 units/Wh, got %v", top.Slope)
 	}
-	if top.SuggestedMultiplier == nil || *top.SuggestedMultiplier <= 0 {
-		t.Fatalf("expected a positive suggested multiplier, got %v", top.SuggestedMultiplier)
+	// multiplier = 1/(1000*slope) ≈ 1.667e-4 kWh per meter-unit
+	if top.SuggestedMultiplier == nil || *top.SuggestedMultiplier < 1.3e-4 || *top.SuggestedMultiplier > 2.1e-4 {
+		t.Fatalf("expected multiplier ~1.667e-4 kWh/unit, got %v", top.SuggestedMultiplier)
 	}
 	// alternating 100/300 W -> 5th percentile floor ≈ 100
 	if floor < 90 || floor > 130 {
 		t.Fatalf("monitored floor out of range: %v", floor)
+	}
+}
+
+// TestCorrelationVsReference_SinglePacketPerMinute guards the meter-side fix: a
+// meter that sends ONE packet per minute has within-bucket max-min == 0 every
+// minute, so the old correlation got no signal (r == nil). The cross-bucket
+// cumulative delta recovers a real per-bucket consumption and correlates.
+func TestCorrelationVsReference_SinglePacketPerMinute(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	cum := 50000.0
+	for m := 0; m <= 90; m++ {
+		p := 100.0
+		if m%2 == 0 {
+			p = 300.0
+		}
+		addRef(t, d, float64(m)+0.25, p)
+		cum += 0.2 * p // this minute's consumption, baked into the single reading
+		add(t, d, 2001, float64(m)+0.25, cum, 4)
+	}
+	start, end := base, base.Add(91*time.Minute)
+	ranking, _, err := d.CorrelationVsReference(context.Background(), []string{"sensor.plug"}, start, end, 1)
+	if err != nil {
+		t.Fatalf("corr: %v", err)
+	}
+	var got *model.CorrRow
+	for i := range ranking {
+		if ranking[i].EndpointID == 2001 {
+			got = &ranking[i]
+		}
+	}
+	if got == nil {
+		t.Fatal("single-packet meter 2001 missing from ranking")
+	}
+	// cross-bucket delta = 0.2*power, ref energy = power/60 Wh -> strong correlation
+	if got.R == nil || *got.R < 0.95 {
+		t.Fatalf("single-packet meter should now correlate (r>=0.95), got %v", got.R)
 	}
 }
 
