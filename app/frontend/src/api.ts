@@ -167,7 +167,7 @@ export const api = {
     j<{ ok: boolean }>("/api/agents/revoke", { method: "POST", body: JSON.stringify({ pubkey }) }),
   sourceTimeline: (qs = "") => j<Record<string, { bucket: string; packets: number }[]>>(`/api/diagnostics/sources${qs}`),
 
-  identify: (hours: number) => j<any>(`/api/identify?hours=${hours}`),
+  identify: (hours: number, bucket = "auto") => j<any>(`/api/identify?hours=${hours}&bucket=${bucket}`),
   identifyAuto: () => j<any>("/api/identify/auto"),
   referenceSeries: (startISO: string, endISO: string) =>
     j<{ bucket: string; value: number }[]>(`/api/reference/series?start=${startISO}&end=${endISO}`),

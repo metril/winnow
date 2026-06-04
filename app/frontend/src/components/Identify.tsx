@@ -10,9 +10,10 @@ import { OverlayChart, ConfidenceBar } from "./charts";
 import { TrackStar, PublishToggle } from "./MeterActions";
 
 const RANGES = [{ value: 1, label: "1h" }, { value: 6, label: "6h" }, { value: 24, label: "24h" }, { value: 72, label: "3d" }];
+const BUCKETS = [{ value: "auto", label: "auto" }, { value: "1m", label: "1m" }, { value: "5m", label: "5m" }, { value: "15m", label: "15m" }, { value: "60m", label: "1h" }];
 
-async function loadAll(hours: number) {
-  const d = await api.identify(hours);
+async function loadAll(hours: number, bucket: string) {
+  const d = await api.identify(hours, bucket);
   let ref: any[] = [], series: Record<string, any[]> = {};
   if (d.ranking?.length) {
     const top = d.ranking.slice(0, 3).map((r: CorrRow) => r.endpoint_id);
@@ -24,13 +25,16 @@ async function loadAll(hours: number) {
 export default function Identify() {
   const { power, configVersion } = useLive();
   const [hours, setHours] = useState(6);
-  const { data, reload } = useFetch(() => loadAll(hours), [hours, configVersion]);
+  const [bucket, setBucket] = useState("auto");
+  const { data, reload } = useFetch(() => loadAll(hours, bucket), [hours, bucket, configVersion]);
 
   const d = data?.d;
   const ranking: CorrRow[] = d?.ranking || [];
   const noSet = d && !(d.monitored_entities?.length);
   const floor = d?.monitored_floor_w;
+  const monitoredKwh: number | undefined = d?.monitored_energy_kwh;
   const winner = ranking[0];
+  const rangeLabel = RANGES.find((x) => x.value === hours)?.label || `${hours}h`;
   const apply = (r: CorrRow) => api.patchMeter(r.endpoint_id, { pub_multiplier: r.suggested_multiplier, pub_unit: "kWh" }).then(reload);
 
   return (
@@ -39,8 +43,9 @@ export default function Identify() {
         {power != null && <Badge tone="gold">monitored {fmt(power)} W</Badge>}
         {floor != null && floor > 0 && <Badge tone="brand">floor {fmt(floor)} W</Badge>}
         <Segmented options={RANGES} value={hours} onChange={setHours} />
+        <Segmented options={BUCKETS} value={bucket} onChange={setBucket} />
         <Button variant="primary" icon={<Crosshair size={15} />} onClick={reload} success="Analyzed">Analyze</Button>
-        <InfoHint>Re-runs the correlation over the selected window: ranks every meter by how well its usage tracks your monitored power. Switch a known load on/off first, then Analyze.</InfoHint>
+        <InfoHint>Re-runs the correlation over the selected window: ranks every meter by how well its consumption tracks your monitored energy. The bucket is the comparison period ("auto" scales with the window). Switch a known load on/off first, then Analyze.</InfoHint>
       </>}>
 
       {noSet && (
@@ -57,7 +62,7 @@ export default function Identify() {
       )}
 
       {!data ? <Skeleton className="h-40" />
-        : winner ? <WinnerCard r={winner} onApply={apply} onReload={reload} />
+        : winner ? <WinnerCard r={winner} monitoredKwh={monitoredKwh} windowLabel={rangeLabel} onApply={apply} onReload={reload} />
           : <Card><CardBody><EmptyState icon={<Crosshair size={22} />} title="No candidates yet">Switch a known load on and off, then Analyze.</EmptyState></CardBody></Card>}
 
       {data && data.ref.length > 0 && (
@@ -97,9 +102,12 @@ export default function Identify() {
   );
 }
 
-function WinnerCard({ r, onApply, onReload }: { r: CorrRow; onApply: (r: CorrRow) => Promise<any>; onReload: () => void }) {
+function WinnerCard({ r, monitoredKwh, windowLabel, onApply, onReload }: { r: CorrRow; monitoredKwh?: number; windowLabel: string; onApply: (r: CorrRow) => Promise<any>; onReload: () => void }) {
   const conf = r.r ?? 0;
   const strong = conf > 0.5;
+  // Energy reconciliation: this candidate's consumption over the window, in kWh,
+  // at the suggested calibration — should be ≥ the monitored subset's energy.
+  const meterKwh = r.suggested_multiplier != null ? r.window_delta * r.suggested_multiplier : null;
   return (
     <Card variant={strong ? "accent" : "default"}>
       <CardBody className="flex flex-col gap-4 sm:flex-row sm:items-center">
@@ -111,6 +119,12 @@ function WinnerCard({ r, onApply, onReload }: { r: CorrRow; onApply: (r: CorrRow
             <Badge tone={r.commodity === "electric" ? "gold" : "brand"}>{r.commodity}</Badge>
           </div>
           <div className="mt-2 max-w-md"><ConfidenceBar r={r.r} /></div>
+          {(meterKwh != null || (monitoredKwh != null && monitoredKwh > 0)) && (
+            <div className="mt-2 text-micro text-secondary">
+              over {windowLabel}: monitored <span className="text-text">{fmt(monitoredKwh, 2)} kWh</span>
+              {meterKwh != null && <> · this meter ≈ <span className="text-text">{fmt(meterKwh, 2)} kWh</span> at suggested calibration</>}
+            </div>
+          )}
           <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-micro text-tertiary">
             {r.suggested_multiplier && <span>suggested ×{r.suggested_multiplier.toPrecision(3)} kWh/unit</span>}
             {r.baseline_w != null && <span>baseline {fmt(r.baseline_w)} W</span>}

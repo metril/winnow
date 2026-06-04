@@ -479,16 +479,26 @@ func (s *server) handleIdentify(w http.ResponseWriter, r *http.Request) {
 	}
 	end := time.Now().UTC()
 	start := end.Add(-time.Duration(hours * float64(time.Hour)))
-	ranking, floor, err := s.d.CorrelationVsReference(r.Context(), cfg.MonitoredEntities, start, end)
+	// Correlation bucket: explicit minutes via ?bucket=, else "auto" scaled to the
+	// window so the number of points stays reasonable.
+	bucketMin := db.PickBucketMin(int(hours * 60))
+	if b := r.URL.Query().Get("bucket"); b != "" && b != "auto" {
+		if v, err := strconv.Atoi(strings.TrimSuffix(b, "m")); err == nil && v > 0 {
+			bucketMin = v
+		}
+	}
+	ranking, floor, err := s.d.CorrelationVsReference(r.Context(), cfg.MonitoredEntities, start, end, bucketMin)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	writeJSON(w, map[string]any{
 		"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339),
-		"monitored_entities": cfg.MonitoredEntities,
-		"monitored_floor_w":  floor,
-		"ranking":            ranking,
+		"monitored_entities":   cfg.MonitoredEntities,
+		"monitored_floor_w":    floor,
+		"monitored_energy_kwh": s.d.MonitoredEnergy(r.Context(), cfg.MonitoredEntities, start, end),
+		"bucket_min":           bucketMin,
+		"ranking":              ranking,
 	})
 }
 

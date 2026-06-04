@@ -14,6 +14,29 @@ func (d *DB) InsertReferenceSample(ctx context.Context, entity string, ts time.T
 	return err
 }
 
+// MonitoredEnergy returns the total monitored consumption over [start,end] in kWh:
+// per-minute total power (W), gap-filled, integrated over time (sum/60 → Wh) and
+// scaled to kWh. Same integration the correlation's reference side uses, so the
+// reconciliation ("meter X kWh vs monitored Y kWh") is consistent with calibration.
+func (d *DB) MonitoredEnergy(ctx context.Context, entities []string, start, end time.Time) float64 {
+	if len(entities) == 0 {
+		return 0
+	}
+	var kwh *float64
+	_ = d.pool.QueryRow(ctx, `
+WITH per_entity AS (
+  SELECT time_bucket_gapfill('1 minute', ts) AS mt, entity_id, locf(avg(power_w)) AS w
+  FROM reference_samples
+  WHERE entity_id = ANY($1) AND ts >= $2 AND ts <= $3
+  GROUP BY mt, entity_id),
+per_min AS (SELECT mt, sum(coalesce(w,0)) AS w FROM per_entity GROUP BY mt)
+SELECT sum(w)/60.0/1000.0 FROM per_min`, entities, start, end).Scan(&kwh)
+	if kwh == nil {
+		return 0
+	}
+	return round(*kwh, 3)
+}
+
 // MonitoredFloor returns the user's baseline draw: a low percentile (5th) of the
 // total monitored power over [start,end]. This is the floor a real meter can
 // never go below.
