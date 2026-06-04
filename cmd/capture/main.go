@@ -10,6 +10,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -392,8 +393,23 @@ func superviseSDR(ctx context.Context, d Sink, source string, p scanParams, up *
 			bus.end()
 			continue
 		}
-		time.Sleep(2 * time.Second) // hold the serial window while rtl_tcp binds the device
+		// Hold the serial window across the open (the USB-contended part), then wait
+		// for rtl_tcp to actually listen before releasing it and starting rtlamr.
+		// rtl_tcp binds its socket only after rtlsdr_open completes (~1-2s), so a
+		// blind sleep raced rtlamr's single no-retry connect against the bind: a
+		// "connection refused" exit then killed rtl_tcp mid-open, looping forever.
+		ready := waitListening(ctx, server, 12*time.Second)
 		bus.end()
+		if !ready {
+			_ = tcp.Process.Kill()
+			_ = tcp.Wait()
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("[capture] source=%s rtl_tcp never listened on %s; restarting", source, server)
+			bus.fail()
+			continue
+		}
 
 		amrArgs := []string{"-server=" + server, "-msgtype=" + msgtype, "-format=json", "-centerfreq=" + freq}
 		if p.filt != "" {
@@ -424,6 +440,31 @@ func superviseSDR(ctx context.Context, d Sink, source string, p scanParams, up *
 			bus.fail() // never really came up — escalate the bus backoff
 		}
 		log.Printf("[capture] source=%s pipeline exited; will reopen via gate", source)
+	}
+}
+
+// waitListening returns true once something accepts a TCP connection on addr
+// (i.e. rtl_tcp finished opening+tuning the dongle and bound its socket), or
+// false on ctx-cancel / deadline. This replaces a blind sleep: rtl_tcp binds
+// only after rtlsdr_open completes, so polling the port is what tells us rtlamr
+// can safely connect — and stops us from killing rtl_tcp mid-open.
+func waitListening(ctx context.Context, addr string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		c, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			c.Close()
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		if !sleepCtx(ctx, 200*time.Millisecond) {
+			return false
+		}
 	}
 }
 
