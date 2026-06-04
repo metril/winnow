@@ -13,7 +13,7 @@ import { useChartTheme } from "./chartTheme";
 
 export default function Overview({ onNav }: { onNav: (v: View) => void }) {
   const chart = useChartTheme();
-  const { power, powerHistory, readings, configVersion } = useLive();
+  const { power, powerHistory, readings, configVersion, connectedAt } = useLive();
   const ov = useFetch(api.overview, [configVersion]);
   const health = useFetch(api.health, [configVersion]);
   const srcLabel = useSourceLabels();
@@ -24,9 +24,12 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
   const costToday = pubs.reduce((s, p) => s + (p.cost_today || 0), 0);
   const todayKwh = pubs.filter((p) => p.commodity === "electric").reduce((s, p) => s + (p.today || 0), 0);
   const spark = powerHistory.map((p) => p.v);
-  // Live SSE rate, but fall back to the server's last-minute count so a page
-  // refresh (empty SSE buffer) shows the real rate immediately instead of 0.
-  const rate = perMin(readings) || (health.data?.packets_last_min ?? 0);
+  // For the first minute after connecting (e.g. a refresh empties the SSE buffer),
+  // floor the live count with the server's last-minute count so the rate shows
+  // immediately instead of ramping up from ~1; after warmup the buffer is complete.
+  const warming = Date.now() - connectedAt < 60_000;
+  const liveRate = (s?: string) => perMin(readings, s);
+  const rate = warming ? Math.max(liveRate(), health.data?.packets_last_min ?? 0) : liveRate();
 
   return (
     <Page title="Overview" actions={<Button variant="ghost" icon={<Crosshair size={15} />} onClick={() => onNav("identify")}>Identify</Button>}>
@@ -88,7 +91,7 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
                 <div key={s.source} className="flex items-center gap-2 text-small">
                   <Dot tone={s.alive ? "good" : "bad"} />
                   <span className="truncate text-secondary">{srcLabel(s.source)}</span>
-                  <span className="ml-auto tabular-nums text-tertiary">{perMin(readings, s.source) || s.packets_last_min}/min</span>
+                  <span className="ml-auto tabular-nums text-tertiary">{(warming ? Math.max(liveRate(s.source), s.packets_last_min) : liveRate(s.source))}/min</span>
                 </div>
               ))}
           </CardBody>

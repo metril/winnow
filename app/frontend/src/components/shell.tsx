@@ -76,12 +76,14 @@ function NavItem({ item, active, onClick, collapsed }:
 }
 
 function StatusRail() {
-  const { readings, configVersion } = useLive();
+  const { readings, configVersion, connectedAt } = useLive();
   const health = useFetch(api.health, [configVersion]);
   const status = useFetch(api.status, [configVersion]);
-  // Live SSE rate, falling back to the server's last-minute count so the rate
-  // survives a dashboard refresh (empty SSE buffer) instead of resetting to 0.
-  const rate = perMin(readings) || (health.data?.packets_last_min ?? 0);
+  // Floor the live SSE rate with the server's last-minute count for the first
+  // minute after connecting, so a dashboard refresh (empty SSE buffer) shows the
+  // real rate immediately instead of ramping up from ~1.
+  const warming = Date.now() - connectedAt < 60_000;
+  const rate = warming ? Math.max(perMin(readings), health.data?.packets_last_min ?? 0) : perMin(readings);
   const capAlive = rate > 0 || (health.data?.alive ?? false);
   const row = (tone: "good" | "bad" | "warn" | "off", label: string, value: ReactNode) => (
     <div className="flex items-center gap-2 px-2 py-1 text-micro">
