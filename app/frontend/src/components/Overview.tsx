@@ -24,7 +24,9 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
   const costToday = pubs.reduce((s, p) => s + (p.cost_today || 0), 0);
   const todayKwh = pubs.filter((p) => p.commodity === "electric").reduce((s, p) => s + (p.today || 0), 0);
   const spark = powerHistory.map((p) => p.v);
-  const rate = perMin(readings);
+  // Live SSE rate, but fall back to the server's last-minute count so a page
+  // refresh (empty SSE buffer) shows the real rate immediately instead of 0.
+  const rate = perMin(readings) || (health.data?.packets_last_min ?? 0);
 
   return (
     <Page title="Overview" actions={<Button variant="ghost" icon={<Crosshair size={15} />} onClick={() => onNav("identify")}>Identify</Button>}>

@@ -79,7 +79,9 @@ function StatusRail() {
   const { readings, configVersion } = useLive();
   const health = useFetch(api.health, [configVersion]);
   const status = useFetch(api.status, [configVersion]);
-  const rate = perMin(readings);
+  // Live SSE rate, falling back to the server's last-minute count so the rate
+  // survives a dashboard refresh (empty SSE buffer) instead of resetting to 0.
+  const rate = perMin(readings) || (health.data?.packets_last_min ?? 0);
   const capAlive = rate > 0 || (health.data?.alive ?? false);
   const row = (tone: "good" | "bad" | "warn" | "off", label: string, value: ReactNode) => (
     <div className="flex items-center gap-2 px-2 py-1 text-micro">
