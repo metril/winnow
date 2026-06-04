@@ -133,18 +133,9 @@ func agentSession(ctx context.Context, name, url string, pub, priv, serverPub [3
 	}
 	log.Printf("[agent] connected & authenticated to %s", url)
 
-	// Enumerate local dongles; namespace each source with the agent name so it is
-	// globally unique and clearly attributed in the dashboard inventory/coverage.
-	devs := enumerateRTL(sctx)
-	byIndex := map[string]sdrDevice{} // namespaced source -> device
-	infos := make([]agentwire.DeviceInfo, 0, len(devs))
-	for _, d := range devs {
-		src := name + "/" + d.source
-		byIndex[src] = d
-		infos = append(infos, agentwire.DeviceInfo{Source: src, Name: d.name, Tuner: d.tuner})
-	}
-	log.Printf("[agent] announcing %d dongle(s): %s", len(devs), describe(devs))
-
+	// Enumerate local dongles and announce them once (the server processes hello
+	// only once and binds its config push to this source set).
+	byIndex, infos := agentInventory(sctx, name)
 	sink := &wsSink{sess: sess, conn: conn}
 	if err := sink.send(agentwire.Message{Type: "hello", Agent: name, Devices: infos}); err != nil {
 		return err
@@ -158,15 +149,92 @@ func agentSession(ctx context.Context, name, url string, pub, priv, serverPub [3
 		}
 	}()
 
-	for {
-		msg, err := sess.RecvMsg(conn)
-		if err != nil {
-			return err
+	// RecvMsg is blocking, so pump messages into a channel and let the session loop
+	// also service a periodic health-check tick (the agent's analogue of the local
+	// manager's rescan: re-enumerate and restart a dongle that's stuck down).
+	msgs := make(chan agentwire.Message)
+	recvErr := make(chan error, 1)
+	go func() {
+		for {
+			m, err := sess.RecvMsg(conn)
+			if err != nil {
+				recvErr <- err
+				return
+			}
+			select {
+			case msgs <- m:
+			case <-sctx.Done():
+				return
+			}
 		}
-		if msg.Type == "config" {
-			reconcileAgent(sctx, sink, running, byIndex, msg.Config)
+	}()
+
+	var lastCfg []agentwire.SourceConfig
+	var lastRescan time.Time
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-sctx.Done():
+			return sctx.Err()
+		case err := <-recvErr:
+			return err
+		case msg := <-msgs:
+			if msg.Type == "config" {
+				lastCfg = msg.Config
+				reconcileAgent(sctx, sink, running, byIndex, lastCfg)
+			}
+		case <-ticker.C:
+			if !dongleRescanNeeded(running) || time.Since(lastRescan) <= 5*time.Minute {
+				continue
+			}
+			log.Printf("[agent] a dongle is unhealthy; re-enumerating")
+			lastRescan = time.Now()
+			for src, rd := range running {
+				rd.cancel()
+				<-rd.done
+				delete(running, src)
+			}
+			newByIndex, _ := agentInventory(sctx, name)
+			if !sameSources(newByIndex, byIndex) {
+				// the dongle set changed (new/removed serial) — reconnect so a fresh
+				// hello re-announces it to the server, which only reads hello once.
+				return errors.New("dongle set changed; reconnecting to re-announce")
+			}
+			byIndex = newByIndex
+			reconcileAgent(sctx, sink, running, byIndex, lastCfg)
 		}
 	}
+}
+
+// agentInventory enumerates local dongles and builds the namespaced source map and
+// the announce payload. Each source is prefixed with the agent name so it is
+// globally unique and clearly attributed in the dashboard inventory/coverage.
+func agentInventory(ctx context.Context, name string) (byIndex map[string]sdrDevice, infos []agentwire.DeviceInfo) {
+	devs := enumerateRTL(ctx)
+	byIndex = make(map[string]sdrDevice, len(devs))
+	infos = make([]agentwire.DeviceInfo, 0, len(devs))
+	for _, d := range devs {
+		src := name + "/" + d.source
+		byIndex[src] = d
+		infos = append(infos, agentwire.DeviceInfo{Source: src, Name: d.name, Tuner: d.tuner})
+	}
+	log.Printf("[agent] announcing %d dongle(s): %s", len(devs), describe(devs))
+	return byIndex, infos
+}
+
+// sameSources reports whether two namespaced inventories cover the same source ids
+// (the device index may differ after a re-enumerate; the serial-based id does not).
+func sameSources(a, b map[string]sdrDevice) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for src := range a {
+		if _, ok := b[src]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // reconcileAgent starts/stops dongle supervisors to match server-pushed config.
