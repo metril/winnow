@@ -120,13 +120,14 @@ var timescaleSteps = []string{
 	`SELECT add_continuous_aggregate_policy('readings_1m',
 	     start_offset => INTERVAL '3 hours',
 	     end_offset   => INTERVAL '1 minute',
-	     schedule_interval => INTERVAL '1 minute')`,
+	     schedule_interval => INTERVAL '1 minute',
+	     if_not_exists => true)`,
 	// real-time aggregation: union the materialized buckets with the freshest raw
 	// rows so analysis over a recent window isn't missing the last minute.
 	`ALTER MATERIALIZED VIEW readings_1m SET (timescaledb.materialized_only = false)`,
 	`ALTER TABLE readings SET (timescaledb.compress, timescaledb.compress_segmentby = 'endpoint_id')`,
-	`SELECT add_compression_policy('readings', INTERVAL '7 days')`,
-	`SELECT add_retention_policy('readings', INTERVAL '180 days')`,
+	`SELECT add_compression_policy('readings', INTERVAL '7 days', if_not_exists => true)`,
+	`SELECT add_retention_policy('readings', INTERVAL '180 days', if_not_exists => true)`,
 }
 
 // InitSchema creates the base schema (idempotent) and best-effort TimescaleDB
