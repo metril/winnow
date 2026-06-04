@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/metril/winnow/compare/v1.2.0...v1.3.0) (2026-06-04)
+
+
+### Features
+
+* live remote-agent updates and a confirm step before approval ([013b073](https://github.com/metril/winnow/commit/013b07332ba615c38f52edb158022dd8f8d5a206))
+
+
+### Bug Fixes
+
+* capture rate no longer ramps from zero after a refresh ([d59bb05](https://github.com/metril/winnow/commit/d59bb05279981ae1b91f05d9c3f7fbfece869eac))
+* stop candidate meter chart lines from diving to zero ([82cf18f](https://github.com/metril/winnow/commit/82cf18fcd157e6db7c157ee400f040e9cd5a39a3))
+
 ## [1.2.0](https://github.com/metril/winnow/compare/v1.1.0...v1.2.0) (2026-06-04)
 
 
