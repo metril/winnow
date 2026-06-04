@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.2.0](https://github.com/metril/winnow/compare/v1.1.0...v1.2.0) (2026-06-04)
+
+
+### Features
+
+* agent pending-approval and trust-on-first-use server key ([945761e](https://github.com/metril/winnow/commit/945761e2a8d3356069c7655f0eb73a9ef0c0c9f2))
+* unify track/publish into confirmable toggles across pages ([d2ec99b](https://github.com/metril/winnow/commit/d2ec99b6e472e5eeb6066dfe16b660dc2ae5666e))
+
+
+### Bug Fixes
+
+* capture rate survives a dashboard refresh ([1da8f7c](https://github.com/metril/winnow/commit/1da8f7c17aa0e1bf203621e13cd085f9ecdc7ea3))
+* chart meter usage as cross-bucket delta so lines don't dive to zero ([12c6cf0](https://github.com/metril/winnow/commit/12c6cf0ee15d44844d9c1ea07a3c0e425632d6f9))
+* copy buttons work in non-secure (plain-HTTP) contexts ([873b8fa](https://github.com/metril/winnow/commit/873b8fa9b1b043ac2dbb1e9bb5985253e426d38a))
+* make TimescaleDB policy setup idempotent ([14e7073](https://github.com/metril/winnow/commit/14e7073eab5eddd794d930b51f67cdd7c669052b))
+
 ## [1.1.0](https://github.com/metril/winnow/compare/v1.0.1...v1.1.0) (2026-06-04)
 
 
