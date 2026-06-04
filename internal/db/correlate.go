@@ -40,7 +40,8 @@ func (d *DB) Correlation(ctx context.Context, start, end time.Time) ([]model.Cor
 	rows, err := d.pool.Query(ctx, `
 SELECT i.endpoint_id, i.msg_type, i.endpoint_type,
        i.max_consumption - i.min_consumption AS total_delta,
-       w.window_delta, w.window_packets
+       w.window_delta, w.window_packets,
+       coalesce(m.is_mine, false), coalesce(m.publish, false)
 FROM meter_index i
 LEFT JOIN (
   SELECT endpoint_id,
@@ -49,7 +50,8 @@ LEFT JOIN (
   FROM readings_1m
   WHERE bucket BETWEEN $1 AND $2
   GROUP BY endpoint_id
-) w ON w.endpoint_id = i.endpoint_id`, start, end)
+) w ON w.endpoint_id = i.endpoint_id
+LEFT JOIN meters m ON m.endpoint_id = i.endpoint_id`, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +63,7 @@ LEFT JOIN (
 		var msgType *string
 		var totalDelta, windowDelta *float64
 		var windowPackets *int64
-		if err := rows.Scan(&r.EndpointID, &msgType, &r.EndpointType, &totalDelta, &windowDelta, &windowPackets); err != nil {
+		if err := rows.Scan(&r.EndpointID, &msgType, &r.EndpointType, &totalDelta, &windowDelta, &windowPackets, &r.IsMine, &r.Publish); err != nil {
 			return nil, err
 		}
 		if msgType != nil {

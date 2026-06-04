@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Search, Star, Radio, EyeOff, Eye, Trash2, GitCompare, X } from "lucide-react";
+import { Search, Radio, EyeOff, Eye, Trash2, GitCompare, X } from "lucide-react";
 import { api, Meter } from "../api";
 import { useLive } from "../live";
 import { useFetch } from "../fetch";
@@ -8,6 +8,7 @@ import { Page } from "./shell";
 import { Card, CardHeader, CardBody, Button, IconButton, Input, Segmented, Badge, Toggle, EmptyState, Dialog, Table, Th, Td, useToast } from "../ui";
 import { MultiSeriesChart } from "./charts";
 import MeterDetail from "./MeterDetail";
+import { TrackStar, PublishToggle } from "./MeterActions";
 
 const RANGES = [{ value: 1, label: "1h" }, { value: 6, label: "6h" }, { value: 24, label: "24h" }, { value: 72, label: "3d" }, { value: 168, label: "7d" }];
 
@@ -67,7 +68,7 @@ export default function Meters() {
               <Segmented options={[{ value: "delta", label: "usage" }, { value: "cumulative", label: "cumulative" }]} value={mode} onChange={setMode as any} />
               <Button size="sm" variant="ghost" icon={<X size={14} />} onClick={() => setSelected(new Set())}>clear</Button>
             </>} />
-          <CardBody>{plot.data && <MultiSeriesChart data={plot.data} />}</CardBody>
+          <CardBody>{plot.data && <MultiSeriesChart data={plot.data} connectNulls={mode === "cumulative"} />}</CardBody>
         </Card>
       )}
 
@@ -100,10 +101,8 @@ export default function Meters() {
                 <Td className="text-tertiary">{shortTs(m.last_seen)}</Td>
                 <Td>
                   <div className="flex">
-                    <IconButton label={m.is_mine ? "untrack" : "track"} onClick={() => patch(m.endpoint_id, { is_mine: !m.is_mine }, m.is_mine ? "Untracked" : "Tracked")}>
-                      <Star size={15} className={m.is_mine ? "fill-gold text-gold" : ""} /></IconButton>
-                    <IconButton label={m.publish ? "stop publishing" : "publish"} onClick={() => patch(m.endpoint_id, { publish: !m.publish, is_mine: true }, m.publish ? "Unpublished" : "Publishing")}>
-                      <Radio size={15} className={m.publish ? "text-gold" : ""} /></IconButton>
+                    <TrackStar id={m.endpoint_id} isMine={m.is_mine} onChange={reload} />
+                    <PublishToggle id={m.endpoint_id} publish={m.publish} onChange={reload} />
                     <IconButton label={m.ignored ? "unignore" : "ignore"} onClick={() => patch(m.endpoint_id, { ignored: !m.ignored }, m.ignored ? "Unignored" : "Ignored")}>
                       {m.ignored ? <Eye size={15} /> : <EyeOff size={15} />}</IconButton>
                     <IconButton label="delete" danger onClick={() => { setDel(m); setPurge(false); }}><Trash2 size={15} /></IconButton>

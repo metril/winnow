@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Crosshair, Star, Radio, AlertTriangle, Settings, Trophy, Check, X } from "lucide-react";
+import { Crosshair, AlertTriangle, Settings, Trophy, Check, X } from "lucide-react";
 import { api, CorrRow } from "../api";
 import { useLive } from "../live";
 import { useFetch } from "../fetch";
@@ -7,6 +7,7 @@ import { fmt } from "../util";
 import { Page } from "./shell";
 import { Card, CardHeader, CardBody, Button, Segmented, Badge, EmptyState, Skeleton, Table, Th, Td } from "../ui";
 import { OverlayChart, ConfidenceBar } from "./charts";
+import { TrackStar, PublishToggle } from "./MeterActions";
 
 const RANGES = [{ value: 1, label: "1h" }, { value: 6, label: "6h" }, { value: 24, label: "24h" }, { value: 72, label: "3d" }];
 
@@ -84,7 +85,7 @@ export default function Identify() {
                   <Td num className="text-secondary">{r.baseline_w != null ? `${fmt(r.baseline_w)} W` : "–"}</Td>
                   <Td>{r.floor_ok == null ? <span className="text-tertiary">–</span> : r.floor_ok ? <Check size={14} className="text-good" /> : <X size={14} className="text-bad" />}</Td>
                   <Td num className="text-secondary">{r.window_packets}</Td>
-                  <Td><RowActions id={r.endpoint_id} onChange={reload} /></Td>
+                  <Td><RowActions r={r} onChange={reload} /></Td>
                 </tr>
               ))}
             </tbody>
@@ -115,21 +116,21 @@ function WinnerCard({ r, onApply, onReload }: { r: CorrRow; onApply: (r: CorrRow
             <span>{r.window_packets} packets</span>
           </div>
         </div>
-        <div className="flex shrink-0 gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {r.suggested_multiplier && <Button variant="default" onClick={() => onApply(r)} success="Calibration applied">Calibrate</Button>}
-          <Button variant="default" icon={<Star size={15} />} onClick={() => api.patchMeter(r.endpoint_id, { is_mine: true, is_candidate: true }).then(onReload)} success="Tracked">Track</Button>
-          <Button variant="gold" icon={<Radio size={15} />} onClick={() => api.patchMeter(r.endpoint_id, { is_mine: true, publish: true }).then(onReload)} success="Publishing to HA">Publish</Button>
+          <TrackStar id={r.endpoint_id} isMine={r.is_mine} onChange={onReload} />
+          <PublishToggle id={r.endpoint_id} publish={r.publish} onChange={onReload} />
         </div>
       </CardBody>
     </Card>
   );
 }
 
-function RowActions({ id, onChange }: { id: number; onChange: () => void }) {
+function RowActions({ r, onChange }: { r: CorrRow; onChange: () => void }) {
   return (
-    <div className="flex gap-1.5">
-      <Button size="sm" onClick={() => api.patchMeter(id, { is_mine: true, is_candidate: true }).then(onChange)} success="Tracked">Track</Button>
-      <Button size="sm" variant="gold" onClick={() => api.patchMeter(id, { is_mine: true, publish: true }).then(onChange)} success="Publishing">Publish</Button>
+    <div className="flex">
+      <TrackStar id={r.endpoint_id} isMine={r.is_mine} onChange={onChange} />
+      <PublishToggle id={r.endpoint_id} publish={r.publish} onChange={onChange} />
     </div>
   );
 }

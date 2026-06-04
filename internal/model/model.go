@@ -78,6 +78,9 @@ type CorrRow struct {
 	BaselineW           *float64 `json:"baseline_w"`           // unmonitored baseline (intercept)
 	SuggestedMultiplier *float64 `json:"suggested_multiplier"` // kWh per meter-unit
 	FloorOK             *bool    `json:"floor_ok"`             // calibrated min ≥ monitored floor
+	// annotations (so the ranking can show/toggle tracked & published state)
+	IsMine  bool `json:"is_mine"`
+	Publish bool `json:"publish"`
 }
 
 // TestWindow is a load-test span (manual or auto from the plug).

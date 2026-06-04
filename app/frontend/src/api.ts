@@ -38,6 +38,8 @@ export interface CorrRow {
   baseline_w: number | null;
   suggested_multiplier: number | null;
   floor_ok: boolean | null;
+  is_mine: boolean;
+  publish: boolean;
 }
 
 export interface TestWindow {
@@ -103,9 +105,10 @@ export interface CoverageResp { cells: CoverageCell[]; sources: CoverageSource[]
 
 export interface AuthorizedAgent { label: string; pubkey: string; fingerprint: string; }
 export interface RemoteDongle { source: string; label: string; alive: boolean; last_seen: string | null; }
+export interface PendingAgent { pubkey: string; fingerprint: string; name: string; remote_addr: string; first_seen: string; last_seen: string; }
 export interface AgentsResp {
   server_key: string; server_fingerprint: string; tls_fingerprint: string;
-  authorized: AuthorizedAgent[]; remotes: RemoteDongle[];
+  authorized: AuthorizedAgent[]; remotes: RemoteDongle[]; pending: PendingAgent[];
 }
 export interface ProfilePoint { key: number; value: number; }
 export interface HeatCell { dow: number; hour: number; value: number; }
