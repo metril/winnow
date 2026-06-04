@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0](https://github.com/metril/winnow/compare/v1.3.0...v1.4.0) (2026-06-04)
+
+
+### Features
+
+* energy reconciliation and a configurable comparison bucket on Identify ([2fd3ab0](https://github.com/metril/winnow/commit/2fd3ab044908be7c41e8a5943afcfdfed75b0a96))
+
+
+### Bug Fixes
+
+* correlate meter consumption as cross-bucket energy, not within-minute max-min ([aa9db02](https://github.com/metril/winnow/commit/aa9db025873cac079adac5657508c66df888884a))
+
 ## [1.3.0](https://github.com/metril/winnow/compare/v1.2.0...v1.3.0) (2026-06-04)
 
 
