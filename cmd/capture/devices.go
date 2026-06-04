@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -43,6 +44,13 @@ func enumerateRTL(ctx context.Context) []sdrDevice {
 	c, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(c, "rtl_test")
+	// Stop rtl_test with SIGINT (not the default SIGKILL) so its handler runs
+	// rtlsdr_cancel_async + rtlsdr_close and the dongle is closed cleanly. rtl_test
+	// opens (and resets) device 0 to probe the tuner; a SIGKILL mid-test leaves it
+	// wedged, so the rtl_tcp open that immediately follows fails with
+	// rtlsdr_write_reg -7. WaitDelay force-kills if it ignores SIGINT.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGINT) }
+	cmd.WaitDelay = 3 * time.Second
 	out, err := cmd.StderrPipe()
 	if err != nil {
 		bus.fail()
@@ -78,6 +86,11 @@ func enumerateRTL(ctx context.Context) []sdrDevice {
 	}
 	cancel()
 	_ = cmd.Wait()
+	if len(devs) > 0 {
+		// rtl_test opened and reset device 0; let it settle before the gate releases
+		// and the capture rtl_tcp opens it, or that open catches it mid-reset.
+		sleepCtx(ctx, usbSettle)
+	}
 	for i := range devs {
 		devs[i].tuner = tuner
 	}

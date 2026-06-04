@@ -112,6 +112,7 @@ const (
 	gateBase    = 30 * time.Second // first penalty; doubles per consecutive fast failure
 	gateMax     = 5 * time.Minute  // cap — a struggling bus gets long rests
 	gateHealthy = 60 * time.Second // a run/enumerate this good resets the penalty
+	usbSettle   = 2 * time.Second  // pause after a USB open+reset before the next open
 )
 
 // begin waits out any bus-wide backoff, then takes the serial window. It
@@ -196,12 +197,17 @@ func (m *manager) run(ctx context.Context) {
 // rescanNeeded reports whether any running dongle has been down for two
 // consecutive ticks (~60s) — a stuck pipeline that re-enumeration may fix. A
 // healthy-but-quiet dongle stays "up" (blocked reading), so it never trips this.
-func (m *manager) rescanNeeded() bool {
-	if len(m.running) == 0 {
+func (m *manager) rescanNeeded() bool { return dongleRescanNeeded(m.running) }
+
+// dongleRescanNeeded is the shared down-streak check used by both the local manager
+// and the remote agent: true once any supervisor has been observed not-up for two
+// consecutive health ticks (~60s). Mutates each runningDev's downStreak.
+func dongleRescanNeeded(running map[string]*runningDev) bool {
+	if len(running) == 0 {
 		return false
 	}
 	bad := false
-	for _, rd := range m.running {
+	for _, rd := range running {
 		if rd.up.Load() {
 			rd.downStreak = 0
 			continue
