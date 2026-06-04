@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/metril/winnow/compare/v1.0.1...v1.1.0) (2026-06-04)
+
+
+### Features
+
+* agent re-enumerates and recovers a dropped dongle mid-session ([41d3a72](https://github.com/metril/winnow/commit/41d3a72d97f1f9cb5309138f78c2dcf4d6cbaeb9))
+
+
+### Bug Fixes
+
+* stop rtl_test gracefully and settle so enumeration doesn't wedge the dongle ([dc610c4](https://github.com/metril/winnow/commit/dc610c4a7c232486634310541d8ea0c78d962ed6))
+
 ## [1.0.1](https://github.com/metril/winnow/compare/v1.0.0...v1.0.1) (2026-06-04)
 
 
