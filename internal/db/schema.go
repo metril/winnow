@@ -45,12 +45,19 @@ CREATE TABLE IF NOT EXISTS reference_samples (
 CREATE INDEX IF NOT EXISTS idx_ref_entity_ts ON reference_samples(entity_id, ts);
 
 CREATE TABLE IF NOT EXISTS test_windows (
-    id       SERIAL PRIMARY KEY,
-    label    TEXT,
-    start_ts TIMESTAMPTZ NOT NULL,
-    end_ts   TIMESTAMPTZ,
-    source   TEXT DEFAULT 'manual'
+    id              SERIAL PRIMARY KEY,
+    label           TEXT,
+    start_ts        TIMESTAMPTZ NOT NULL,
+    end_ts          TIMESTAMPTZ,
+    source          TEXT DEFAULT 'manual',
+    known_load_w    DOUBLE PRECISION,
+    known_entity_id TEXT
 );
+-- known-load calibration anchor (added after initial release): the wattage (or HA
+-- sensor) of a load the user toggles during the test, so a meter that moves by the
+-- known energy is directly calibrated and strongly confirmed.
+ALTER TABLE test_windows ADD COLUMN IF NOT EXISTS known_load_w DOUBLE PRECISION;
+ALTER TABLE test_windows ADD COLUMN IF NOT EXISTS known_entity_id TEXT;
 
 CREATE TABLE IF NOT EXISTS capture_heartbeat (
     source      TEXT PRIMARY KEY,

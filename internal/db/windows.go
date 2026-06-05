@@ -8,14 +8,16 @@ import (
 )
 
 type windowRow struct {
-	id         int64
-	label      string
-	start, end time.Time
+	id          int64
+	label       string
+	start, end  time.Time
+	knownLoadW  *float64
+	knownEntity *string
 }
 
 func (d *DB) closedWindows(ctx context.Context, source string) ([]windowRow, error) {
 	rows, err := d.pool.Query(ctx,
-		`SELECT id, label, start_ts, end_ts FROM test_windows
+		`SELECT id, label, start_ts, end_ts, known_load_w, known_entity_id FROM test_windows
 		 WHERE end_ts IS NOT NULL AND ($1 = '' OR source = $1) ORDER BY start_ts`, source)
 	if err != nil {
 		return nil, err
@@ -24,7 +26,7 @@ func (d *DB) closedWindows(ctx context.Context, source string) ([]windowRow, err
 	var out []windowRow
 	for rows.Next() {
 		var w windowRow
-		if err := rows.Scan(&w.id, &w.label, &w.start, &w.end); err != nil {
+		if err := rows.Scan(&w.id, &w.label, &w.start, &w.end, &w.knownLoadW, &w.knownEntity); err != nil {
 			return nil, err
 		}
 		out = append(out, w)
@@ -38,7 +40,7 @@ func scanTest(row interface {
 	var t model.TestWindow
 	var start time.Time
 	var end *time.Time
-	if err := row.Scan(&t.ID, &t.Label, &start, &end, &t.Source); err != nil {
+	if err := row.Scan(&t.ID, &t.Label, &start, &end, &t.Source, &t.KnownLoadW, &t.KnownEntityID); err != nil {
 		return t, err
 	}
 	t.StartTS = start.UTC().Format(time.RFC3339Nano)
@@ -46,11 +48,14 @@ func scanTest(row interface {
 	return t, nil
 }
 
-// CreateTest inserts a window (end may be nil for a running test).
-func (d *DB) CreateTest(ctx context.Context, label string, start time.Time, end *time.Time, source string) (model.TestWindow, error) {
+// CreateTest inserts a window (end may be nil for a running test). knownLoadW /
+// knownEntity optionally record a toggled load for direct calibration.
+func (d *DB) CreateTest(ctx context.Context, label string, start time.Time, end *time.Time, source string, knownLoadW *float64, knownEntity *string) (model.TestWindow, error) {
 	row := d.pool.QueryRow(ctx,
-		`INSERT INTO test_windows (label, start_ts, end_ts, source) VALUES ($1,$2,$3,$4)
-		 RETURNING id, label, start_ts, end_ts, source`, label, start, end, source)
+		`INSERT INTO test_windows (label, start_ts, end_ts, source, known_load_w, known_entity_id)
+		 VALUES ($1,$2,$3,$4,$5,$6)
+		 RETURNING id, label, start_ts, end_ts, source, known_load_w, known_entity_id`,
+		label, start, end, source, knownLoadW, knownEntity)
 	return scanTest(row)
 }
 
@@ -62,13 +67,13 @@ func (d *DB) StopTest(ctx context.Context, id int64, end time.Time) (model.TestW
 
 func (d *DB) GetTest(ctx context.Context, id int64) (model.TestWindow, error) {
 	row := d.pool.QueryRow(ctx,
-		`SELECT id, label, start_ts, end_ts, source FROM test_windows WHERE id=$1`, id)
+		`SELECT id, label, start_ts, end_ts, source, known_load_w, known_entity_id FROM test_windows WHERE id=$1`, id)
 	return scanTest(row)
 }
 
 func (d *DB) ListTests(ctx context.Context) ([]model.TestWindow, error) {
 	rows, err := d.pool.Query(ctx,
-		`SELECT id, label, start_ts, end_ts, source FROM test_windows ORDER BY start_ts DESC`)
+		`SELECT id, label, start_ts, end_ts, source, known_load_w, known_entity_id FROM test_windows ORDER BY start_ts DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +97,7 @@ func (d *DB) DeleteTest(ctx context.Context, id int64) error {
 // OpenWindow returns the currently-running window for a source, if any.
 func (d *DB) OpenWindow(ctx context.Context, source string) (model.TestWindow, bool) {
 	row := d.pool.QueryRow(ctx,
-		`SELECT id, label, start_ts, end_ts, source FROM test_windows
+		`SELECT id, label, start_ts, end_ts, source, known_load_w, known_entity_id FROM test_windows
 		 WHERE end_ts IS NULL AND source=$1 ORDER BY start_ts DESC LIMIT 1`, source)
 	t, err := scanTest(row)
 	return t, err == nil

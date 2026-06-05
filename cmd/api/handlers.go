@@ -15,6 +15,7 @@ import (
 	"winnow/internal/db"
 	"winnow/internal/ert"
 	"winnow/internal/ha"
+	"winnow/internal/model"
 )
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -22,6 +23,14 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func badReq(w http.ResponseWriter, msg string) { http.Error(w, msg, http.StatusBadRequest) }
+
+// emptyToNil normalizes an optional string pointer: nil or "" → nil.
+func emptyToNil(s *string) *string {
+	if s == nil || *s == "" {
+		return nil
+	}
+	return s
+}
 
 func round(v float64, places int) float64 {
 	p := math.Pow(10, float64(places))
@@ -487,7 +496,13 @@ func (s *server) handleIdentify(w http.ResponseWriter, r *http.Request) {
 			bucketMin = v
 		}
 	}
-	ranking, floor, err := s.d.CorrelationVsReference(r.Context(), cfg.MonitoredEntities, start, end, bucketMin)
+	// Commodity: the monitored reference is electrical power, so default to ranking
+	// electric meters only; ?commodity=all includes gas/water.
+	commodity := "electric"
+	if c := r.URL.Query().Get("commodity"); c == "all" {
+		commodity = "all"
+	}
+	ranking, floor, err := s.d.CorrelationVsReference(r.Context(), cfg.MonitoredEntities, start, end, bucketMin, commodity == "electric")
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -498,6 +513,7 @@ func (s *server) handleIdentify(w http.ResponseWriter, r *http.Request) {
 		"monitored_floor_w":    floor,
 		"monitored_energy_kwh": s.d.MonitoredEnergy(r.Context(), cfg.MonitoredEntities, start, end),
 		"bucket_min":           bucketMin,
+		"commodity":            commodity,
 		"ranking":              ranking,
 	})
 }
@@ -796,9 +812,11 @@ func (s *server) handleListTests(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleCreateTest(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Label   string `json:"label"`
-		StartTS string `json:"start_ts"`
-		EndTS   string `json:"end_ts"`
+		Label         string   `json:"label"`
+		StartTS       string   `json:"start_ts"`
+		EndTS         string   `json:"end_ts"`
+		KnownLoadW    *float64 `json:"known_load_w"`
+		KnownEntityID *string  `json:"known_entity_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		badReq(w, "bad json")
@@ -819,7 +837,7 @@ func (s *server) handleCreateTest(w http.ResponseWriter, r *http.Request) {
 	if body.Label == "" {
 		body.Label = "load test"
 	}
-	t, err := s.d.CreateTest(r.Context(), body.Label, start.UTC(), end, "manual")
+	t, err := s.d.CreateTest(r.Context(), body.Label, start.UTC(), end, "manual", body.KnownLoadW, emptyToNil(body.KnownEntityID))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -829,13 +847,15 @@ func (s *server) handleCreateTest(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleStartTest(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Label string `json:"label"`
+		Label         string   `json:"label"`
+		KnownLoadW    *float64 `json:"known_load_w"`
+		KnownEntityID *string  `json:"known_entity_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body.Label == "" {
 		body.Label = "load test"
 	}
-	t, err := s.d.CreateTest(r.Context(), body.Label, time.Now().UTC(), nil, "manual")
+	t, err := s.d.CreateTest(r.Context(), body.Label, time.Now().UTC(), nil, "manual", body.KnownLoadW, emptyToNil(body.KnownEntityID))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -871,7 +891,8 @@ func (s *server) handleDeleteTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleCombined(w http.ResponseWriter, r *http.Request) {
-	res, err := s.d.CombinedRanking(r.Context())
+	cfg, _ := s.d.LoadConfig(r.Context())
+	res, err := s.d.CombinedRanking(r.Context(), cfg.MonitoredEntities)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -897,7 +918,34 @@ func (s *server) handleTestCorrelation(w http.ResponseWriter, r *http.Request) {
 			end = e
 		}
 	}
-	ranking, err := s.d.Correlation(r.Context(), start.UTC(), end)
+	// When ground-truth sensors are configured, rank this window against them (so
+	// the per-test view shows the composite confidence and the known-load anchor);
+	// otherwise fall back to the rate-ratio correlation.
+	cfg, _ := s.d.LoadConfig(r.Context())
+	var ranking []model.CorrRow
+	if len(cfg.MonitoredEntities) > 0 {
+		bm := db.PickBucketMin(int(end.Sub(start.UTC()).Minutes()))
+		ranking, _, err = s.d.CorrelationVsReference(r.Context(), cfg.MonitoredEntities, start.UTC(), end, bm, true)
+		if err == nil {
+			// known-load anchor for this window → a direct multiplier per candidate.
+			expected := 0.0
+			if t.KnownLoadW != nil {
+				expected = *t.KnownLoadW * end.Sub(start.UTC()).Hours() / 1000.0
+			} else if t.KnownEntityID != nil {
+				expected = s.d.EntityEnergy(r.Context(), *t.KnownEntityID, start.UTC(), end)
+			}
+			if expected > 0 {
+				for i := range ranking {
+					if ranking[i].WindowDelta > 0 {
+						am := expected / ranking[i].WindowDelta
+						ranking[i].AnchorMultiplier = &am
+					}
+				}
+			}
+		}
+	} else {
+		ranking, err = s.d.Correlation(r.Context(), start.UTC(), end)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

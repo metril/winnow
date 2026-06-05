@@ -43,17 +43,22 @@ func (d *DB) MeterSeries(ctx context.Context, id int64, since, until *time.Time,
 	// Per-bucket usage = the rise in the cumulative counter SINCE the previous
 	// bucket (lag), not max-min WITHIN a bucket — the latter is 0 whenever a bucket
 	// holds a single packet, which collapsed sparse meters' charts to zero. The
-	// first bucket (lag NULL) and any negative step (counter reset) yield a NULL
-	// delta, which the chart renders as a gap rather than a dive to 0.
+	// first bucket (lag NULL) yields a NULL delta. A negative step is a counter
+	// rollover (2^24/2^32 wrap) when it wraps forward by less than half the range —
+	// corrected to the real rise — otherwise a genuine reset → NULL gap.
+	msgType, _ := d.LatestMsgType(ctx, id)
+	mod := counterModulus(msgType)
 	bq := fmt.Sprintf(`WITH b AS (
 	                     SELECT time_bucket('%s', ts) AS bkt,
 	                            max(consumption) AS cmax,
 	                            count(*) AS n
-	                     FROM readings %s GROUP BY bkt)
-	                   SELECT bkt,
-	                          cmax - lag(cmax) OVER (ORDER BY bkt) AS delta,
-	                          n
-	                   FROM b ORDER BY bkt`, bucketInterval(bucket), where)
+	                     FROM readings %s GROUP BY bkt),
+	                   stepped AS (
+	                     SELECT bkt, n, cmax - lag(cmax) OVER (ORDER BY bkt) AS raw
+	                     FROM b)
+	                   SELECT bkt, %s AS delta, n
+	                   FROM stepped ORDER BY bkt`,
+		bucketInterval(bucket), where, rolloverDeltaSQL("raw", fmt.Sprintf("%f", mod)))
 	drows, err := d.pool.Query(ctx, bq, args...)
 	if err != nil {
 		return s, err
@@ -65,9 +70,6 @@ func (d *DB) MeterSeries(ctx context.Context, id int64, since, until *time.Time,
 		var n int64
 		if err := drows.Scan(&b, &delta, &n); err != nil {
 			return s, err
-		}
-		if delta != nil && *delta < 0 {
-			delta = nil
 		}
 		s.Deltas = append(s.Deltas, model.Bucket{Bucket: b.UTC().Format(time.RFC3339Nano), Delta: delta, Packets: n})
 	}
@@ -107,12 +109,20 @@ func (d *DB) MultiSeries(ctx context.Context, ids []int64, since, until *time.Ti
 		                  FROM readings %s GROUP BY endpoint_id, b ORDER BY b`,
 			bucketInterval(bucket), where)
 	} else {
+		// rollover-aware cross-bucket delta: the modulus is per-meter (by message
+		// type), so join meter_index. A wrap forward by <½ range is a rollover; a
+		// larger drop is a reset → NULL (dropped below).
 		q = fmt.Sprintf(`WITH b AS (
-		                   SELECT endpoint_id, time_bucket('%s', ts) AS bkt, max(consumption) AS cmax
-		                   FROM readings %s GROUP BY endpoint_id, bkt)
-		                 SELECT endpoint_id, bkt,
-		                        cmax - lag(cmax) OVER (PARTITION BY endpoint_id ORDER BY bkt) AS v
-		                 FROM b ORDER BY bkt`, bucketInterval(bucket), where)
+		                   SELECT r.endpoint_id, time_bucket('%s', r.ts) AS bkt, max(r.consumption) AS cmax,
+		                          CASE WHEN mi.msg_type = 'SCM' THEN 16777216.0 ELSE 4294967296.0 END AS modulus
+		                   FROM readings r JOIN meter_index mi USING (endpoint_id) %s GROUP BY r.endpoint_id, bkt, modulus),
+		                 stepped AS (
+		                   SELECT endpoint_id, bkt, modulus,
+		                          cmax - lag(cmax) OVER (PARTITION BY endpoint_id ORDER BY bkt) AS raw
+		                   FROM b)
+		                 SELECT endpoint_id, bkt, %s AS v
+		                 FROM stepped ORDER BY bkt`,
+			bucketInterval(bucket), where, rolloverDeltaSQL("raw", "modulus"))
 	}
 	rows, err := d.pool.Query(ctx, q, args...)
 	if err != nil {

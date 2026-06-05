@@ -372,7 +372,7 @@ func (w *worker) autoWindow(ctx context.Context, power, openDelta float64, on bo
 		// doesn't drag the baseline up and mask the close.
 		w.aw.baseline = w.aw.baseline*(1-autoBaselineA) + power*autoBaselineA
 		if power >= w.aw.baseline+openDelta && now.Sub(w.aw.lastClosedAt) >= autoCooldown {
-			if t, err := w.d.CreateTest(ctx, "auto load "+now.Format("15:04"), now, nil, "auto"); err == nil {
+			if t, err := w.d.CreateTest(ctx, "auto load "+now.Format("15:04"), now, nil, "auto", nil, nil); err == nil {
 				w.aw.open, w.aw.openID, w.aw.openedAt = true, t.ID, now
 				log.Printf("[worker] auto window opened (%.0fW ≥ baseline %.0f + %.0f)", power, w.aw.baseline, openDelta)
 			}

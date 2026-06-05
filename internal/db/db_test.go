@@ -94,7 +94,7 @@ func TestCorrelationVsReference_RanksAndCalibrates(t *testing.T) {
 	start, end := seed(t, d)
 	entities := []string{"sensor.plug"}
 
-	ranking, floor, err := d.CorrelationVsReference(context.Background(), entities, start, end, 1)
+	ranking, floor, err := d.CorrelationVsReference(context.Background(), entities, start, end, 1, true)
 	if err != nil {
 		t.Fatalf("corr: %v", err)
 	}
@@ -121,6 +121,176 @@ func TestCorrelationVsReference_RanksAndCalibrates(t *testing.T) {
 	if floor < 90 || floor > 130 {
 		t.Fatalf("monitored floor out of range: %v", floor)
 	}
+	// the composite confidence is the headline and should be high for the match.
+	if top.Confidence == nil || *top.Confidence < 0.5 {
+		t.Fatalf("expected high confidence for the tracking meter, got %v", top.Confidence)
+	}
+	// and it should outrank the unrelated steady meter's confidence.
+	for _, r := range ranking {
+		if r.EndpointID == 1002 && r.Confidence != nil && *r.Confidence >= *top.Confidence {
+			t.Fatalf("steady meter 1002 confidence %v should be below 1001 %v", *r.Confidence, *top.Confidence)
+		}
+	}
+}
+
+// TestRolloverAwareDelta verifies the cross-bucket delta treats a counter wrap at
+// the 2^24 (SCM) boundary as a real small rise, while a genuine mid-range reset
+// becomes a NULL gap — not the old "any decrease = reset" behavior.
+func TestRolloverAwareDelta(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	ctx := context.Background()
+	// meter 3001 (SCM): counter wraps 2^24 in the 3rd bucket (…215 → 7). Readings are
+	// 5 min apart so each lands in its own "5m" bucket.
+	for i, v := range []float64{16777200, 16777210, 16777215, 7, 12} {
+		add(t, d, 3001, float64(i*5)+0.25, v, 4)
+	}
+	// meter 3002 (SCM): a genuine reset from mid-range (5010 → 100) in the 3rd bucket.
+	for i, v := range []float64{5000, 5010, 100, 110} {
+		add(t, d, 3002, float64(i*5)+0.25, v, 4)
+	}
+	since := base
+
+	s1, err := d.MeterSeries(ctx, 3001, &since, nil, "5m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonNil := 0
+	for _, b := range s1.Deltas {
+		if b.Delta != nil {
+			nonNil++
+			if *b.Delta < 0 || *b.Delta > 100 {
+				t.Fatalf("rollover delta should be a small positive rise, got %v", *b.Delta)
+			}
+		}
+	}
+	if nonNil != 4 { // m1,m2,m3(wrap),m4 — none dropped
+		t.Fatalf("rollover meter should keep all 4 steps, got %d non-nil deltas", nonNil)
+	}
+
+	s2, err := d.MeterSeries(ctx, 3002, &since, nil, "5m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gaps := 0
+	for _, b := range s2.Deltas {
+		if b.Delta == nil {
+			gaps++
+		}
+	}
+	if gaps < 2 { // the first bucket (no lag) + the reset bucket
+		t.Fatalf("genuine reset should drop to a gap, got %d nil deltas", gaps)
+	}
+}
+
+// TestElectricOnlyFilter verifies the commodity gate: a gas meter that correlates
+// with the (electrical) reference is excluded when electricOnly is set.
+func TestElectricOnlyFilter(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	ctx := context.Background()
+	for m := 0; m < 60; m++ {
+		power := 100.0
+		if m%2 == 0 {
+			power = 300.0
+		}
+		addRef(t, d, float64(m)+0.25, power)
+		// electric meter 1001 and gas meter 9001 both track the plug.
+		eLo := 10000.0 + sumTracked(m)
+		add(t, d, 1001, float64(m), eLo, 4)
+		add(t, d, 1001, float64(m)+0.5, eLo+0.1*power, 4)
+		gLo := 30000.0 + sumTracked(m)
+		add(t, d, 9001, float64(m), gLo, 2) // endpoint_type 2 = gas
+		add(t, d, 9001, float64(m)+0.5, gLo+0.1*power, 2)
+	}
+	start, end := base, base.Add(60*time.Minute)
+
+	elec, _, err := d.CorrelationVsReference(ctx, []string{"sensor.plug"}, start, end, 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range elec {
+		if r.EndpointID == 9001 {
+			t.Fatal("electric-only ranking must not include the gas meter 9001")
+		}
+	}
+	all, _, err := d.CorrelationVsReference(ctx, []string{"sensor.plug"}, start, end, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasCorr(all, 9001) {
+		t.Fatal("commodity=all should include the gas meter 9001")
+	}
+}
+
+func hasCorr(rows []model.CorrRow, id int64) bool {
+	for _, r := range rows {
+		if r.EndpointID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestCombinedRankingConfidenceAndAnchor checks the cross-window aggregation: a
+// meter that tracks the plug across two independent test windows (each tagged with
+// a known load) wins on composite confidence and gets a known-load anchor
+// multiplier; a steady unrelated meter does not.
+func TestCombinedRankingConfidenceAndAnchor(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	ctx := context.Background()
+	entities := []string{"sensor.plug"}
+
+	cum1, cum2 := 10000.0, 20000.0
+	mkWindow := func(offset int) (time.Time, time.Time) {
+		for m := 0; m < 40; m++ {
+			mm := offset + m
+			power := 100.0
+			if m%2 == 0 {
+				power = 300.0
+			}
+			addRef(t, d, float64(mm)+0.25, power)
+			add(t, d, 1001, float64(mm), cum1, 4)
+			cum1 += 0.1 * power
+			add(t, d, 1001, float64(mm)+0.5, cum1, 4)
+			add(t, d, 1002, float64(mm), cum2, 4)
+			cum2 += 5
+			add(t, d, 1002, float64(mm)+0.5, cum2, 4)
+		}
+		return base.Add(time.Duration(offset) * time.Minute), base.Add(time.Duration(offset+40) * time.Minute)
+	}
+	s1, e1 := mkWindow(0)
+	s2, e2 := mkWindow(60)
+	kw := 200.0
+	if _, err := d.CreateTest(ctx, "w1", s1, &e1, "manual", &kw, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.CreateTest(ctx, "w2", s2, &e2, "manual", &kw, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := d.CombinedRanking(ctx, entities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ranking, _ := res["ranking"].([]AggRow)
+	if len(ranking) == 0 {
+		t.Fatal("no combined ranking")
+	}
+	top := ranking[0]
+	if top.EndpointID != 1001 {
+		t.Fatalf("expected 1001 to win across windows, got %d (%+v)", top.EndpointID, ranking)
+	}
+	if top.Confidence == nil || *top.Confidence < 0.4 {
+		t.Fatalf("expected a cross-window confidence for the winner, got %v", top.Confidence)
+	}
+	if top.AnchorMultiplier == nil || *top.AnchorMultiplier <= 0 {
+		t.Fatalf("expected a known-load anchor multiplier, got %v", top.AnchorMultiplier)
+	}
+	if top.TestsPresent < 2 {
+		t.Fatalf("winner should appear in both windows, got %d", top.TestsPresent)
+	}
 }
 
 // TestCorrelationVsReference_SinglePacketPerMinute guards the meter-side fix: a
@@ -141,7 +311,7 @@ func TestCorrelationVsReference_SinglePacketPerMinute(t *testing.T) {
 		add(t, d, 2001, float64(m)+0.25, cum, 4)
 	}
 	start, end := base, base.Add(91*time.Minute)
-	ranking, _, err := d.CorrelationVsReference(context.Background(), []string{"sensor.plug"}, start, end, 1)
+	ranking, _, err := d.CorrelationVsReference(context.Background(), []string{"sensor.plug"}, start, end, 1, true)
 	if err != nil {
 		t.Fatalf("corr: %v", err)
 	}

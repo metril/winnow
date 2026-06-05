@@ -37,6 +37,27 @@ SELECT sum(w)/60.0/1000.0 FROM per_min`, entities, start, end).Scan(&kwh)
 	return round(*kwh, 3)
 }
 
+// EntityEnergy returns one HA sensor's energy over [start,end] in kWh: its
+// per-minute power (W), gap-filled, integrated over time. Used by the known-load
+// calibration anchor when the toggled load is itself a measured HA sensor.
+func (d *DB) EntityEnergy(ctx context.Context, entity string, start, end time.Time) float64 {
+	if entity == "" {
+		return 0
+	}
+	var kwh *float64
+	_ = d.pool.QueryRow(ctx, `
+WITH per_min AS (
+  SELECT time_bucket_gapfill('1 minute', ts) AS mt, locf(avg(power_w)) AS w
+  FROM reference_samples
+  WHERE entity_id = $1 AND ts >= $2 AND ts <= $3
+  GROUP BY mt)
+SELECT sum(coalesce(w,0))/60.0/1000.0 FROM per_min`, entity, start, end).Scan(&kwh)
+	if kwh == nil {
+		return 0
+	}
+	return round(*kwh, 3)
+}
+
 // MonitoredFloor returns the user's baseline draw: a low percentile (5th) of the
 // total monitored power over [start,end]. This is the floor a real meter can
 // never go below.

@@ -72,24 +72,37 @@ type CorrRow struct {
 	BaselineRate  float64  `json:"baseline_rate"`
 	WindowPackets int64    `json:"window_packets"`
 	PlugEnergyWh  *float64 `json:"plug_energy_wh"` // ground-truth energy over the window
-	// regression of the meter's per-minute delta vs aggregate monitored power:
+	// regression of the meter's per-bucket energy delta vs aggregate monitored energy:
 	R2                  *float64 `json:"r2"`
-	Slope               *float64 `json:"slope"`                // meter-units/min per W
+	Slope               *float64 `json:"slope"`                // meter-units per Wh (Deming)
 	BaselineW           *float64 `json:"baseline_w"`           // unmonitored baseline (intercept)
-	SuggestedMultiplier *float64 `json:"suggested_multiplier"` // kWh per meter-unit
+	SuggestedMultiplier *float64 `json:"suggested_multiplier"` // kWh per meter-unit (regression)
+	AnchorMultiplier    *float64 `json:"anchor_multiplier"`    // kWh per meter-unit (known-load anchor)
+	MeterEnergyKwh      *float64 `json:"meter_energy_kwh"`     // candidate energy over window at suggested calibration
 	FloorOK             *bool    `json:"floor_ok"`             // calibrated min ≥ monitored floor
+	LagBuckets          *int     `json:"lag_buckets"`          // best meter-vs-reference lag (buckets)
+	// composite identification confidence (0..1) and its component breakdown:
+	Confidence      *float64           `json:"confidence"`
+	ConfidenceParts map[string]float64 `json:"confidence_parts,omitempty"`
+	// current applied calibration (so the UI can show current vs suggested vs anchor):
+	PubMultiplier float64 `json:"pub_multiplier"`
+	PubUnit       *string `json:"pub_unit"`
 	// annotations (so the ranking can show/toggle tracked & published state)
 	IsMine  bool `json:"is_mine"`
 	Publish bool `json:"publish"`
 }
 
-// TestWindow is a load-test span (manual or auto from the plug).
+// TestWindow is a load-test span (manual or auto from the plug). KnownLoadW /
+// KnownEntityID optionally record a toggled load of known wattage for direct
+// (regression-free) calibration of the meter that saw it.
 type TestWindow struct {
-	ID      int64   `json:"id"`
-	Label   string  `json:"label"`
-	StartTS string  `json:"start_ts"`
-	EndTS   *string `json:"end_ts"`
-	Source  string  `json:"source"`
+	ID            int64    `json:"id"`
+	Label         string   `json:"label"`
+	StartTS       string   `json:"start_ts"`
+	EndTS         *string  `json:"end_ts"`
+	Source        string   `json:"source"`
+	KnownLoadW    *float64 `json:"known_load_w"`
+	KnownEntityID *string  `json:"known_entity_id"`
 }
 
 // SourceHealth is per-SDR capture liveness.
