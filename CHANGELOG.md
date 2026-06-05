@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.5.0](https://github.com/metril/winnow/compare/v1.4.0...v1.5.0) (2026-06-05)
+
+
+### Features
+
+* **identify:** research-backed confidence model and calibration engine ([55b51f9](https://github.com/metril/winnow/commit/55b51f90ff99b216e80085f80f3c92409e3ae46c))
+* **identify:** selectable-meter chart, commodity toggle, and legible calibration UX ([854bc12](https://github.com/metril/winnow/commit/854bc12f64ee1599d97fae6e14a12ee301eb8fe1))
+* **ui:** interactive chart legends and accessible Toggle/Dialog ([4db8e59](https://github.com/metril/winnow/commit/4db8e59fad2aeda59ffc2af26276031c6b5c44b0))
+
+
+### Bug Fixes
+
+* **ui:** consistent loading/empty states, aria-labels, and token polish ([5acc501](https://github.com/metril/winnow/commit/5acc501acea8f929d37cedb0718e31583b0f47f1))
+
 ## [1.4.0](https://github.com/metril/winnow/compare/v1.3.0...v1.4.0) (2026-06-04)
 
 
