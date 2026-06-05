@@ -9,6 +9,12 @@ services:
   db:
     image: timescale/timescaledb:2.17.2-pg16
     restart: unless-stopped
+    # /dev/shm for Postgres parallel workers (dynamic shared memory). Docker
+    # defaults a container to 64m, too small for parallel VACUUM/ANALYZE and
+    # parallel queries over the readings hypertable — they fail with "could not
+    # resize shared memory segment … No space left on device" (which is /dev/shm,
+    # NOT the disk). Override with WINNOW_DB_SHM (e.g. 256m on a tight host).
+    shm_size: "${WINNOW_DB_SHM:-1gb}"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-winnow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-winnow}
