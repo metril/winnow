@@ -30,10 +30,12 @@ function ChipLegend({ items, onToggle }: {
   return (
     <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1">
       {items.map((it) => {
-        const dot = <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: it.color }} />;
-        const cls = "inline-flex items-center gap-1.5 text-micro " + (it.hidden ? "text-tertiary line-through" : "text-secondary");
+        const dot = <span className="h-2 w-2 shrink-0 rounded-full transition-opacity" style={{ background: it.color, opacity: it.hidden ? 0.4 : 1 }} />;
+        const cls = "inline-flex items-center gap-1.5 text-micro " + (it.hidden ? "text-tertiary line-through opacity-60" : "text-secondary");
         return onToggle ? (
-          <button key={it.key} type="button" onClick={() => onToggle(it.key)} className={cls + " hover:text-text transition-colors"} title="Toggle on the chart">
+          <button key={it.key} type="button" onClick={() => onToggle(it.key)} aria-pressed={!it.hidden}
+            className={cls + " rounded transition-colors hover:text-text focus:outline-none focus-visible:ring-1 focus-visible:ring-brand"}
+            title={it.hidden ? "Show on the chart" : "Hide from the chart"}>
             {dot}{it.label}
           </button>
         ) : (
@@ -62,21 +64,22 @@ export function Sparkline({ data, color, height = 36 }: { data: number[]; color?
   );
 }
 
-export function MultiSeriesChart({ data, labels, height = 240, connectNulls = false }:
-  { data: SeriesMap; labels?: Record<string, string>; height?: number; connectNulls?: boolean }) {
+export function MultiSeriesChart({ data, labels, height = 240, connectNulls = false, hidden, onToggle }:
+  { data: SeriesMap; labels?: Record<string, string>; height?: number; connectNulls?: boolean; hidden?: Set<string>; onToggle?: (key: string) => void }) {
   const th = useChartTheme();
   const keys = Object.keys(data);
-  const merged = mergeRows(keys.map((k) => ({ key: k, pts: data[k] })));
+  const isHidden = (k: string) => hidden?.has(k) ?? false;
+  const merged = mergeRows(keys.filter((k) => !isHidden(k)).map((k) => ({ key: k, pts: data[k] })));
   return (
     <>
-      <ChipLegend items={keys.map((k, i) => ({ key: k, label: labels?.[k] || `#${k}`, color: th.seriesPalette[i % th.seriesPalette.length] }))} />
+      <ChipLegend onToggle={onToggle} items={keys.map((k, i) => ({ key: k, label: labels?.[k] || `#${k}`, color: th.seriesPalette[i % th.seriesPalette.length], hidden: isHidden(k) }))} />
       <ResponsiveContainer width="100%" height={height}>
         <ComposedChart data={merged}>
           <CartesianGrid {...th.gridProps} />
           <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} scale="time" tickFormatter={axisFmt} {...th.axisX} />
           <YAxis tickFormatter={(v) => fmt(v)} {...th.axisY} />
           <Tooltip labelFormatter={(t) => shortTs(new Date(t as number).toISOString())} formatter={(v: any) => fmt(v)} contentStyle={th.tooltipStyle} />
-          {keys.map((k, i) => (
+          {keys.map((k, i) => isHidden(k) ? null : (
             <Line key={k} type="monotone" dataKey={k} name={labels?.[k] || k} stroke={th.seriesPalette[i % th.seriesPalette.length]} dot={false} strokeWidth={2} isAnimationActive={false} connectNulls={connectNulls} />
           ))}
         </ComposedChart>

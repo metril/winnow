@@ -1,7 +1,7 @@
 // winnow UI primitives — Pro Observability Dark. The Button auto-manages a
 // pending spinner and toasts when its onClick returns a promise.
 import {
-  createContext, useContext, useState, useCallback, ReactNode,
+  createContext, useContext, useState, useCallback, useEffect, useRef, ReactNode,
   ButtonHTMLAttributes, InputHTMLAttributes, SelectHTMLAttributes, TextareaHTMLAttributes,
 } from "react";
 import clsx from "clsx";
@@ -233,7 +233,9 @@ export function InfoHint({ children }: { children: ReactNode }) {
 }
 export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
   return (
-    <button type="button" onClick={() => onChange(!checked)} className="inline-flex items-center gap-2 text-small">
+    <button type="button" role="switch" aria-checked={checked} aria-label={!label ? "Toggle" : undefined}
+      onClick={() => onChange(!checked)}
+      className="inline-flex items-center gap-2 text-small focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1 focus-visible:ring-offset-surface rounded-full">
       <span className={cx("relative h-5 w-9 rounded-full transition", checked ? "bg-brand" : "bg-raised border border-border-strong")}>
         <span className={cx("absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition", checked ? "left-[18px]" : "left-0.5")} />
       </span>
@@ -275,11 +277,31 @@ export function Tabs<T extends string>({ tabs, value, onChange }:
 /* ------------------------------- dialog ---------------------------------- */
 export function Dialog({ open, onClose, title, children, footer }:
   { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; footer?: ReactNode }) {
+  const panel = useRef<HTMLDivElement>(null);
+  // Esc closes; focus the first interactive control on open and trap Tab inside.
+  useEffect(() => {
+    if (!open) return;
+    const el = panel.current;
+    const focusables = () => el ? [...el.querySelectorAll<HTMLElement>('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])')].filter((n) => !n.hasAttribute("disabled")) : [];
+    (focusables()[0] || el)?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { onClose(); return; }
+      if (e.key !== "Tab") return;
+      const f = focusables();
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-      <div className="relative z-10 w-[min(92vw,480px)] animate-fade-in rounded-xl border border-border-strong bg-overlay text-text shadow-overlay" onClick={(e) => e.stopPropagation()}>
+      <div ref={panel} role="dialog" aria-modal="true" tabIndex={-1}
+        className="relative z-10 w-[min(92vw,480px)] animate-fade-in rounded-xl border border-border-strong bg-overlay text-text shadow-overlay outline-none" onClick={(e) => e.stopPropagation()}>
         <div className="border-b border-border px-5 py-3.5 text-h3">{title}</div>
         <div className="px-5 py-4 text-small text-secondary">{children}</div>
         {footer && <div className="flex justify-end gap-2 border-t border-border px-5 py-3.5">{footer}</div>}
