@@ -5,7 +5,7 @@ import { api, HeatCell, DailyPoint, Benchmark } from "../api";
 import { fmt, shortTs, tsMs, since } from "../util";
 import { Heatmap } from "./charts";
 import { useChartTheme } from "./chartTheme";
-import { Button, Input, Field, Badge, Tabs, Segmented, Spinner, useToast } from "../ui";
+import { Button, Input, Field, Badge, Tabs, Segmented, Spinner, InfoHint, useToast } from "../ui";
 
 type DTab = "timeline" | "heatmap" | "daily";
 const tickFmt = (t: number) => shortTs(new Date(t).toISOString()).slice(5, 16);
@@ -143,12 +143,20 @@ function PublishConfig({ id, ann, onSaved }: { id: number; ann: any; onSaved: ()
   const [name, setName] = useState(ann.pub_name || "");
   const [mult, setMult] = useState(String(ann.pub_multiplier ?? 1));
   const [unit, setUnit] = useState(ann.pub_unit || "");
+  const reset = () => { setMult("1"); setUnit(""); return api.patchMeter(id, { pub_multiplier: 1, pub_unit: "" }).then(onSaved); };
   return (
-    <div className="mt-3 flex flex-wrap items-end gap-2 rounded-xl border border-gold/20 bg-gold/[0.04] p-3">
-      <Field label="HA sensor name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="friendly name" /></Field>
-      <Field label="multiplier"><Input value={mult} onChange={(e) => setMult(e.target.value)} className="w-28" /></Field>
-      <Field label="unit"><Input value={unit} onChange={(e) => setUnit(e.target.value)} className="w-24" placeholder="kWh" /></Field>
-      <Button variant="gold" onClick={() => api.patchMeter(id, { pub_name: name, pub_multiplier: parseFloat(mult) || 1, pub_unit: unit }).then(onSaved)}>Apply</Button>
+    <div className="mt-3 rounded-xl border border-gold/20 bg-gold/[0.04] p-3">
+      <div className="mb-2 flex items-center gap-1.5 text-micro font-medium text-secondary">
+        publish config
+        <InfoHint>The multiplier converts the raw meter counter to energy: <b>published = raw delta × multiplier</b>. Calibrate it on the Identify page, or set a custom value here. It only changes published / Overview / cost / MQTT values.</InfoHint>
+      </div>
+      <div className="flex flex-wrap items-end gap-2">
+        <Field label="HA sensor name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="friendly name" /></Field>
+        <Field label="multiplier"><Input value={mult} onChange={(e) => setMult(e.target.value)} className="w-28" /></Field>
+        <Field label="unit"><Input value={unit} onChange={(e) => setUnit(e.target.value)} className="w-24" placeholder="kWh" /></Field>
+        <Button variant="gold" onClick={() => api.patchMeter(id, { pub_name: name, pub_multiplier: parseFloat(mult) || 1, pub_unit: unit }).then(onSaved)} success="Applied">Apply</Button>
+        <Button variant="ghost" onClick={reset} success="Reset">Reset</Button>
+      </div>
     </div>
   );
 }

@@ -17,6 +17,7 @@ function readChannels(name: string): [number, number, number] {
 export interface ChartTheme {
   grid: string; axis: string; brand: string; gold: string; text: string; faint: string;
   palette: string[];
+  seriesPalette: string[];     // candidate-line colors that never collide with `gold`
   heat: (a: number) => string; // sequential ramp for heatmaps/matrices
   empty: string;               // empty heat cell
   axisX: any; axisY: any; gridProps: any; tooltipStyle: any;
@@ -34,6 +35,11 @@ export function useChartTheme(): ChartTheme {
     const [hr, hg, hb] = readChannels("--brand");
     const [er, eg, eb] = readChannels("--raised");
     const palette = [1, 2, 3, 4, 5, 6].map((i) => readVar(`--chart-${i}`));
+    // Candidate series must never read as the gold reference line. --chart-2 is the
+    // same amber as --gold, so the series palette drops it (and leads with the
+    // non-teal hues so the first line is clearly distinct): indigo, rose, cyan,
+    // violet, then teal.
+    const seriesPalette = [3, 4, 5, 6, 1].map((i) => readVar(`--chart-${i}`));
     const axisX = { stroke: grid, tick: { fill: axis, fontSize: 11 }, tickLine: false, axisLine: false as const };
     const axisY = { ...axisX, width: 48 };
     const gridProps = { horizontal: true, vertical: false, stroke: grid, strokeOpacity: 0.7, strokeDasharray: "3 3" };
@@ -43,7 +49,7 @@ export function useChartTheme(): ChartTheme {
       borderRadius: 8, fontSize: 12, color: text, boxShadow: "var(--shadow-overlay)",
     };
     return {
-      grid, axis, brand, gold, text, faint, palette,
+      grid, axis, brand, gold, text, faint, palette, seriesPalette,
       heat: (a: number) => `rgb(${hr} ${hg} ${hb} / ${Math.max(0, Math.min(1, a))})`,
       empty: `rgb(${er} ${eg} ${eb} / 0.5)`,
       axisX, axisY, gridProps, tooltipStyle,

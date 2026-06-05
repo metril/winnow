@@ -23,14 +23,23 @@ function mergeRows(maps: { key: string; pts: { bucket: string; value: number }[]
   return [...rows.values()].sort((a, b) => a.t - b.t);
 }
 
-function ChipLegend({ items }: { items: { key: string; label: string; color: string }[] }) {
+function ChipLegend({ items, onToggle }: {
+  items: { key: string; label: string; color: string; hidden?: boolean }[];
+  onToggle?: (key: string) => void;
+}) {
   return (
     <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1">
-      {items.map((it) => (
-        <span key={it.key} className="inline-flex items-center gap-1.5 text-micro text-secondary">
-          <span className="h-2 w-2 rounded-full" style={{ background: it.color }} />{it.label}
-        </span>
-      ))}
+      {items.map((it) => {
+        const dot = <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: it.color }} />;
+        const cls = "inline-flex items-center gap-1.5 text-micro " + (it.hidden ? "text-tertiary line-through" : "text-secondary");
+        return onToggle ? (
+          <button key={it.key} type="button" onClick={() => onToggle(it.key)} className={cls + " hover:text-text transition-colors"} title="Toggle on the chart">
+            {dot}{it.label}
+          </button>
+        ) : (
+          <span key={it.key} className={cls}>{dot}{it.label}</span>
+        );
+      })}
     </div>
   );
 }
@@ -60,7 +69,7 @@ export function MultiSeriesChart({ data, labels, height = 240, connectNulls = fa
   const merged = mergeRows(keys.map((k) => ({ key: k, pts: data[k] })));
   return (
     <>
-      <ChipLegend items={keys.map((k, i) => ({ key: k, label: labels?.[k] || `#${k}`, color: th.palette[i % th.palette.length] }))} />
+      <ChipLegend items={keys.map((k, i) => ({ key: k, label: labels?.[k] || `#${k}`, color: th.seriesPalette[i % th.seriesPalette.length] }))} />
       <ResponsiveContainer width="100%" height={height}>
         <ComposedChart data={merged}>
           <CartesianGrid {...th.gridProps} />
@@ -68,7 +77,7 @@ export function MultiSeriesChart({ data, labels, height = 240, connectNulls = fa
           <YAxis tickFormatter={(v) => fmt(v)} {...th.axisY} />
           <Tooltip labelFormatter={(t) => shortTs(new Date(t as number).toISOString())} formatter={(v: any) => fmt(v)} contentStyle={th.tooltipStyle} />
           {keys.map((k, i) => (
-            <Line key={k} type="monotone" dataKey={k} name={labels?.[k] || k} stroke={th.palette[i % th.palette.length]} dot={false} strokeWidth={2} isAnimationActive={false} connectNulls={connectNulls} />
+            <Line key={k} type="monotone" dataKey={k} name={labels?.[k] || k} stroke={th.seriesPalette[i % th.seriesPalette.length]} dot={false} strokeWidth={2} isAnimationActive={false} connectNulls={connectNulls} />
           ))}
         </ComposedChart>
       </ResponsiveContainer>
@@ -76,15 +85,19 @@ export function MultiSeriesChart({ data, labels, height = 240, connectNulls = fa
   );
 }
 
-export function OverlayChart({ reference, meters, labels, height = 260 }:
-  { reference: Pt[]; meters: SeriesMap; labels?: Record<string, string>; height?: number }) {
+export function OverlayChart({ reference, meters, labels, height = 260, hidden, onToggle }:
+  { reference: Pt[]; meters: SeriesMap; labels?: Record<string, string>; height?: number; hidden?: Set<string>; onToggle?: (key: string) => void }) {
   const th = useChartTheme();
   const keys = Object.keys(meters);
-  const merged = mergeRows([{ key: "__plug", pts: reference }, ...keys.map((k) => ({ key: k, pts: meters[k] }))]);
+  // Stable per-key color (by position) so a line keeps its hue when others toggle.
+  const colorOf = (i: number) => th.seriesPalette[i % th.seriesPalette.length];
+  const isHidden = (k: string) => hidden?.has(k) ?? false;
+  const shown = keys.filter((k) => !isHidden(k));
+  const merged = mergeRows([{ key: "__plug", pts: reference }, ...shown.map((k) => ({ key: k, pts: meters[k] }))]);
   return (
     <>
-      <ChipLegend items={[{ key: "__plug", label: "monitored power", color: th.gold },
-        ...keys.map((k, i) => ({ key: k, label: labels?.[k] || `#${k}`, color: th.palette[(i + 1) % th.palette.length] }))]} />
+      <ChipLegend onToggle={onToggle} items={[{ key: "__plug", label: "monitored power", color: th.gold },
+        ...keys.map((k, i) => ({ key: k, label: labels?.[k] || `#${k}`, color: colorOf(i), hidden: isHidden(k) }))]} />
       <ResponsiveContainer width="100%" height={height}>
         <ComposedChart data={merged}>
           <defs><linearGradient id="plugfill" x1="0" y1="0" x2="0" y2="1">
@@ -96,8 +109,8 @@ export function OverlayChart({ reference, meters, labels, height = 260 }:
           <YAxis yAxisId="R" orientation="right" tickFormatter={(v) => fmt(v)} {...th.axisY} stroke={th.brand} />
           <Tooltip labelFormatter={(t) => shortTs(new Date(t as number).toISOString())} formatter={(v: any) => fmt(v)} contentStyle={th.tooltipStyle} />
           <Area yAxisId="L" dataKey="__plug" name="monitored power (W)" stroke={th.gold} fill="url(#plugfill)" strokeWidth={2} dot={false} isAnimationActive={false} />
-          {keys.map((k, i) => (
-            <Line yAxisId="R" key={k} type="monotone" dataKey={k} name={labels?.[k] || `meter ${k}`} stroke={th.palette[(i + 1) % th.palette.length]} dot={false} strokeWidth={2} isAnimationActive={false} connectNulls />
+          {keys.map((k, i) => isHidden(k) ? null : (
+            <Line yAxisId="R" key={k} type="monotone" dataKey={k} name={labels?.[k] || `meter ${k}`} stroke={colorOf(i)} dot={false} strokeWidth={2} isAnimationActive={false} connectNulls />
           ))}
         </ComposedChart>
       </ResponsiveContainer>
@@ -105,14 +118,15 @@ export function OverlayChart({ reference, meters, labels, height = 260 }:
   );
 }
 
-// ConfidenceBar — a 0..1 correlation as a labelled bar with the shared ramp.
-export function ConfidenceBar({ r }: { r: number | null }) {
+// ConfidenceBar — a 0..1 score as a labelled bar with the shared ramp. `title`
+// optionally carries a hover breakdown of the contributing signals.
+export function ConfidenceBar({ r, title }: { r: number | null; title?: string }) {
   const t = useChartTheme();
   if (r === null || r === undefined) return <span className="text-tertiary">–</span>;
   const pct = Math.max(0, Math.min(1, r)) * 100;
   const color = r >= 0.8 ? t.brand : r >= 0.5 ? t.gold : t.faint;
   return (
-    <div className="relative h-5 w-full min-w-[88px] overflow-hidden rounded bg-raised" title={`r=${r}`}>
+    <div className="relative h-5 w-full min-w-[88px] overflow-hidden rounded bg-raised" title={title || `${r}`}>
       <div className="h-full rounded" style={{ width: `${pct}%`, background: color, opacity: 0.9 }} />
       <span className="absolute inset-0 grid place-items-center text-micro font-medium tabular-nums text-text">{r.toFixed(2)}</span>
     </div>

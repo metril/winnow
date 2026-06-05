@@ -37,7 +37,14 @@ export interface CorrRow {
   slope: number | null;
   baseline_w: number | null;
   suggested_multiplier: number | null;
+  anchor_multiplier: number | null;
+  meter_energy_kwh: number | null;
   floor_ok: boolean | null;
+  lag_buckets: number | null;
+  confidence: number | null;
+  confidence_parts?: Record<string, number>;
+  pub_multiplier: number;
+  pub_unit: string | null;
   is_mine: boolean;
   publish: boolean;
 }
@@ -48,6 +55,8 @@ export interface TestWindow {
   start_ts: string;
   end_ts: string | null;
   source: string;
+  known_load_w: number | null;
+  known_entity_id: string | null;
 }
 
 export interface SourceHealth {
@@ -167,14 +176,15 @@ export const api = {
     j<{ ok: boolean }>("/api/agents/revoke", { method: "POST", body: JSON.stringify({ pubkey }) }),
   sourceTimeline: (qs = "") => j<Record<string, { bucket: string; packets: number }[]>>(`/api/diagnostics/sources${qs}`),
 
-  identify: (hours: number, bucket = "auto") => j<any>(`/api/identify?hours=${hours}&bucket=${bucket}`),
+  identify: (hours: number, bucket = "auto", commodity = "electric") =>
+    j<any>(`/api/identify?hours=${hours}&bucket=${bucket}&commodity=${commodity}`),
   identifyAuto: () => j<any>("/api/identify/auto"),
   referenceSeries: (startISO: string, endISO: string) =>
     j<{ bucket: string; value: number }[]>(`/api/reference/series?start=${startISO}&end=${endISO}`),
 
   tests: () => j<TestWindow[]>("/api/tests"),
-  startTest: (label: string) =>
-    j<TestWindow>("/api/tests/start", { method: "POST", body: JSON.stringify({ label }) }),
+  startTest: (label: string, known?: { known_load_w?: number; known_entity_id?: string }) =>
+    j<TestWindow>("/api/tests/start", { method: "POST", body: JSON.stringify({ label, ...known }) }),
   stopTest: (id: number) => j<TestWindow>(`/api/tests/${id}/stop`, { method: "POST" }),
   createTest: (label: string, start_ts: string, end_ts: string) =>
     j<TestWindow>("/api/tests", { method: "POST", body: JSON.stringify({ label, start_ts, end_ts }) }),

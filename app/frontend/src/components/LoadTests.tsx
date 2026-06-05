@@ -5,19 +5,24 @@ import { useLive } from "../live";
 import { useFetch } from "../fetch";
 import { shortTs } from "../util";
 import { Page } from "./shell";
-import { Card, CardHeader, CardBody, Button, Input, Badge, Dot, EmptyState, Skeleton, Table, Th, Td } from "../ui";
+import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, EmptyState, Skeleton, Table, Th, Td } from "../ui";
 import { ConfidenceBar } from "./charts";
 
 export default function LoadTests() {
   const { configVersion } = useLive();
   const [label, setLabel] = useState("");
+  const [knownW, setKnownW] = useState("");
   const tests = useFetch(api.tests, [configVersion]);
   const combined = useFetch(() => api.combined().catch(() => null), [configVersion]);
 
   const list = tests.data || [];
   const running = list.find((t) => !t.end_ts);
   const refresh = () => { tests.reload(); combined.reload(); };
-  const start = () => api.startTest(label || "load test").then(() => { setLabel(""); refresh(); });
+  const start = () => {
+    const w = parseFloat(knownW);
+    return api.startTest(label || "load test", w > 0 ? { known_load_w: w } : undefined)
+      .then(() => { setLabel(""); setKnownW(""); refresh(); });
+  };
   const stop = (id: number) => api.stopTest(id).then(refresh);
 
   return (
@@ -33,7 +38,10 @@ export default function LoadTests() {
             </div>
           ) : (
             <div className="flex flex-wrap items-end gap-2">
-              <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. kettle + oven" className="max-w-xs" />
+              <Field label="what you're switching"><Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. kettle + oven" className="max-w-xs" /></Field>
+              <Field label="known load (W, optional)" hint="if you know the wattage, winnow calibrates directly">
+                <Input value={knownW} onChange={(e) => setKnownW(e.target.value)} placeholder="e.g. 1500" className="w-40" />
+              </Field>
               <Button variant="primary" icon={<Play size={14} />} onClick={start} success="Recording started">Start test</Button>
             </div>
           )}
@@ -45,12 +53,13 @@ export default function LoadTests() {
           <CardHeader title={<span className="inline-flex items-center gap-2"><Trophy size={16} className="text-gold" /> Combined ranking</span>}
             subtitle={`Across ${combined.data.tests?.length || 0} completed tests — the meter that wins most is almost certainly yours.`} />
           <Table>
-            <thead><tr><Th>meter</Th><Th>commodity</Th><Th num>avg r</Th><Th num>wins</Th></tr></thead>
+            <thead><tr><Th>meter</Th><Th>commodity</Th><Th className="w-40">confidence</Th><Th num>avg r</Th><Th num>wins</Th></tr></thead>
             <tbody>
               {combined.data.ranking.slice(0, 10).map((r: any, i: number) => (
                 <tr key={r.endpoint_id} className={"border-b border-border/60 " + (i === 0 ? "bg-gold/5" : "")}>
                   <Td><span className="id-pill">#{r.endpoint_id}</span></Td>
                   <Td className="text-secondary">{r.commodity}</Td>
+                  <Td>{r.confidence != null ? <ConfidenceBar r={r.confidence} title={r.anchor_multiplier != null ? `known-load ×${Number(r.anchor_multiplier).toPrecision(3)}` : undefined} /> : <span className="text-tertiary">–</span>}</Td>
                   <Td num>{r.avg_r != null ? r.avg_r.toFixed(2) : "–"}</Td>
                   <Td num className={i === 0 ? "text-gold" : ""}>{r.wins}/{r.tests_total}</Td>
                 </tr>
@@ -84,6 +93,7 @@ function TestRow({ t, onChange }: { t: TestWindow; onChange: () => void }) {
           <span className="font-medium">{t.label}</span>
           <span className="mono text-micro text-tertiary">{shortTs(t.start_ts)} → {t.end_ts ? shortTs(t.end_ts) : "running"}</span>
           <Badge>{t.source}</Badge>
+          {t.known_load_w != null && <Badge tone="gold">{t.known_load_w} W known</Badge>}
         </button>
         <Button size="sm" variant="ghost" icon={<Trash2 size={14} />} onClick={() => api.deleteTest(t.id).then(onChange)} success="Deleted" />
       </div>
@@ -96,7 +106,7 @@ function TestRow({ t, onChange }: { t: TestWindow; onChange: () => void }) {
                   <tr key={r.endpoint_id}>
                     <td className="py-1"><span className="id-pill">#{r.endpoint_id}</span></td>
                     <td className="text-tertiary">{r.commodity}</td>
-                    <td className="w-40"><ConfidenceBar r={r.r} /></td>
+                    <td className="w-40"><ConfidenceBar r={r.confidence ?? r.r} /></td>
                     <td className={"text-right tabular-nums " + (i === 0 ? "text-gold" : "text-tertiary")}>×{r.score?.toFixed?.(1) ?? r.score} rate</td>
                   </tr>
                 ))}
