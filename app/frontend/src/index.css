@@ -27,6 +27,10 @@
     --warn: 217 119 6;
     --bad: 220 38 38;            /* red-600 */
     --info: 37 99 235;           /* blue-600 */
+    /* chart series palette. NOTE: --chart-2 == --gold by design (shared amber).
+       chartTheme.ts's seriesPalette deliberately DROPS --chart-2 so candidate
+       lines never collide with the gold "monitored power" reference line — keep
+       these in sync if you reorder. */
     --chart-1: 13 148 136;
     --chart-2: 217 119 6;
     --chart-3: 79 70 229;

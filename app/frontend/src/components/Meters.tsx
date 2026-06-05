@@ -25,6 +25,8 @@ export default function Meters() {
   const [detail, setDetail] = useState<number | null>(null);
   const [del, setDel] = useState<Meter | null>(null);
   const [purge, setPurge] = useState(false);
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const toggleHidden = (k: string) => setHidden((h) => { const n = new Set(h); n.has(k) ? n.delete(k) : n.add(k); return n; });
 
   const qs = useMemo(() => {
     const p = new URLSearchParams({ since: since(hours) });
@@ -68,7 +70,7 @@ export default function Meters() {
               <Segmented options={[{ value: "delta", label: "usage" }, { value: "cumulative", label: "cumulative" }]} value={mode} onChange={setMode as any} />
               <Button size="sm" variant="ghost" icon={<X size={14} />} onClick={() => setSelected(new Set())}>clear</Button>
             </>} />
-          <CardBody>{plot.data && <MultiSeriesChart data={plot.data} connectNulls />}</CardBody>
+          <CardBody>{plot.data && <MultiSeriesChart data={plot.data} connectNulls hidden={hidden} onToggle={toggleHidden} />}</CardBody>
         </Card>
       )}
 
@@ -82,7 +84,7 @@ export default function Meters() {
           <tbody>
             {meters.map((m) => (
               <tr key={m.endpoint_id} className={"border-b border-border/60 hover:bg-raised/50 " + (detail === m.endpoint_id ? "bg-raised " : "") + (m.is_mine ? "shadow-[inset_2px_0_0] shadow-gold/50" : "")}>
-                <Td><input type="checkbox" className="accent-brand" checked={selected.has(m.endpoint_id)} onChange={() => toggleSel(m.endpoint_id)} /></Td>
+                <Td><input type="checkbox" className="accent-brand cursor-pointer" aria-label={`Compare meter ${m.endpoint_id}`} checked={selected.has(m.endpoint_id)} onChange={() => toggleSel(m.endpoint_id)} /></Td>
                 <Td>
                   <button className="inline-flex items-center gap-2 hover:text-brand" onClick={() => setDetail(detail === m.endpoint_id ? null : m.endpoint_id)}>
                     <span className="id-pill">#{m.endpoint_id}</span>

@@ -86,7 +86,8 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
           <CardHeader title="Capture by source" icon={<Radio size={16} />}
             actions={<Button size="sm" variant="ghost" onClick={() => onNav("devices")}>Devices</Button>} />
           <CardBody className="space-y-2">
-            {(health.data?.sources || []).length === 0 ? <EmptyState>No dongles reporting.</EmptyState>
+            {!health.data ? <Skeleton className="h-20" />
+              : health.data.sources.length === 0 ? <EmptyState icon={<Radio size={20} />} title="No dongles reporting" action={<Button size="sm" variant="primary" onClick={() => onNav("devices")}>Set up a device</Button>}>Connect an RTL-SDR and start capture to see sources here.</EmptyState>
               : health.data!.sources.map((s) => (
                 <div key={s.source} className="flex items-center gap-2 text-small">
                   <Dot tone={s.alive ? "good" : "bad"} />
@@ -105,7 +106,7 @@ function Hero({ pubs, power, spark, cur }: { pubs: PublishedLive[]; power: numbe
   const p = pubs[0];
   return (
     <Card variant="accent" className="relative overflow-hidden">
-      <div className="pointer-events-none absolute inset-0" style={{ background: "radial-gradient(600px 240px at 85% -20%, rgba(45,212,191,0.10), transparent 60%)" }} />
+      <div className="pointer-events-none absolute inset-0" style={{ background: "radial-gradient(600px 240px at 85% -20%, rgb(var(--brand) / 0.10), transparent 60%)" }} />
       <CardBody>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -133,7 +134,7 @@ function Hero({ pubs, power, spark, cur }: { pubs: PublishedLive[]; power: numbe
 function OnboardingHero({ onNav }: { onNav: (v: View) => void }) {
   return (
     <Card className="relative overflow-hidden">
-      <div className="pointer-events-none absolute inset-0" style={{ background: "radial-gradient(600px 240px at 85% -20%, rgba(45,212,191,0.08), transparent 60%)" }} />
+      <div className="pointer-events-none absolute inset-0" style={{ background: "radial-gradient(600px 240px at 85% -20%, rgb(var(--brand) / 0.08), transparent 60%)" }} />
       <CardBody className="py-8">
         <div className="flex items-center gap-2 text-brand"><Crosshair size={18} /><span className="text-h3 text-text">Find your meter</span></div>
         <p className="mt-2 max-w-lg text-small text-secondary">

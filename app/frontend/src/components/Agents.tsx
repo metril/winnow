@@ -125,7 +125,7 @@ function Inner({ data, reload }: { data: AgentsResp; reload: () => void }) {
                 <div key={a.pubkey} className="flex items-center gap-3 rounded-md border border-border bg-app/40 px-3 py-2">
                   <Badge tone="brand">{a.label}</Badge>
                   <span className="mono truncate text-micro text-tertiary">{a.fingerprint}</span>
-                  <button type="button" onClick={() => revoke(a.pubkey, a.label)} className="ml-auto inline-flex items-center gap-1 text-micro text-bad hover:underline"><Trash2 size={12} /> revoke</button>
+                  <button type="button" aria-label={`Revoke agent ${a.label}`} onClick={() => revoke(a.pubkey, a.label)} className="ml-auto inline-flex items-center gap-1 rounded text-micro text-bad transition-colors hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-bad"><Trash2 size={12} /> revoke</button>
                 </div>
               ))}
             </div>}

@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Star, Radio, EyeOff, Eye, Terminal, Download } from "lucide-react";
+import { Star, Radio, EyeOff, Eye, Terminal, Download, CalendarClock, Copy } from "lucide-react";
 import { api, HeatCell, DailyPoint, Benchmark } from "../api";
-import { fmt, shortTs, tsMs, since } from "../util";
+import { fmt, shortTs, tsMs, since, copyText } from "../util";
 import { Heatmap } from "./charts";
 import { useChartTheme } from "./chartTheme";
-import { Button, Input, Field, Badge, Tabs, Segmented, Spinner, InfoHint, useToast } from "../ui";
+import { Button, Input, Field, Badge, Tabs, Segmented, Skeleton, EmptyState, IconButton, InfoHint, useToast } from "../ui";
 
 type DTab = "timeline" | "heatmap" | "daily";
 const tickFmt = (t: number) => shortTs(new Date(t).toISOString()).slice(5, 16);
@@ -20,7 +20,7 @@ export default function MeterDetail({ id, hours, onChange }: { id: number; hours
 
   const load = () => api.meter(id, `?since=${since(hours)}&bucket=${bucket}`).then(setData);
   useEffect(() => { setData(null); load(); /* eslint-disable-next-line */ }, [id, bucket, hours]);
-  if (!data) return <div className="flex items-center gap-2 text-secondary"><Spinner /> loading meter #{id}…</div>;
+  if (!data) return <Skeleton className="h-64" />;
 
   const ann = data.annotation || {};
   const points = data.points.map((p: any) => ({ t: tsMs(p.ts), c: p.consumption }));
@@ -81,7 +81,12 @@ export default function MeterDetail({ id, hours, onChange }: { id: number; hours
           <Button variant="ghost" icon={<Terminal size={15} />} onClick={() => api.filterCmd(id).then((r) => setCmd(r.command))}>Filter cmd</Button>
         </div>
         {ann.publish && <PublishConfig id={id} ann={ann} onSaved={() => { load(); onChange?.(); toast.show("Publish config applied", "good"); }} />}
-        {cmd && <div className="mono mt-3 rounded-lg border border-border bg-app px-3 py-2 text-micro text-good">{cmd}</div>}
+        {cmd && (
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-app px-3 py-2">
+            <code className="mono flex-1 break-all text-micro text-good">{cmd}</code>
+            <IconButton label="Copy filter command" onClick={() => copyText(cmd).then(() => toast.show("Copied", "good"))}><Copy size={13} /></IconButton>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -90,8 +95,8 @@ export default function MeterDetail({ id, hours, onChange }: { id: number; hours
 function HeatmapTab({ id }: { id: number }) {
   const [cells, setCells] = useState<HeatCell[] | null>(null);
   useEffect(() => { api.profile(id, "heatmap", 14).then(setCells); }, [id]);
-  if (!cells) return <div className="text-secondary">loading…</div>;
-  if (!cells.length) return <div className="text-tertiary italic">Not enough history yet.</div>;
+  if (!cells) return <Skeleton className="h-32" />;
+  if (!cells.length) return <EmptyState icon={<CalendarClock size={20} />} title="Not enough history">A usage heatmap appears once this meter has a couple of weeks of readings.</EmptyState>;
   return <div><div className="label mb-2">Average use by hour × day of week (14 days)</div><Heatmap cells={cells} /></div>;
 }
 
@@ -100,6 +105,7 @@ function DailyTab({ id }: { id: number }) {
   const [daily, setDaily] = useState<DailyPoint[] | null>(null);
   const [bench, setBench] = useState<Benchmark | null>(null);
   useEffect(() => { api.profile(id, "daily", 30).then(setDaily); api.benchmark(id, 7).then(setBench); }, [id]);
+  if (!daily) return <Skeleton className="h-44" />;
   return (
     <div className="space-y-3">
       {bench && bench.peers > 0 && (
