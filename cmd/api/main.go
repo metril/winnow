@@ -125,6 +125,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/ha/power-entities", s.handlePowerEntities)
 	mux.HandleFunc("POST /api/ha/create-helper", s.handleCreateHelper)
 	mux.HandleFunc("GET /api/ha/utility-statistics", s.handleUtilityStatistics)
+	mux.HandleFunc("GET /api/utility/series", s.handleUtilitySeries)
 
 	mux.HandleFunc("GET /api/devices", s.handleDevices)
 	mux.HandleFunc("PUT /api/devices/{serial}", s.handlePutDevice)

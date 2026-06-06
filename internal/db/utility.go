@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"winnow/internal/model"
@@ -265,6 +266,176 @@ func (d *DB) resolvedPeriod(ctx context.Context, statID string) string {
 		return *p
 	}
 	return "month"
+}
+
+// kwhFactor converts a statistic's native energy unit to kWh. utility_energy
+// stores values in the statistic's own unit, so display/cost must normalize.
+func kwhFactor(unit string) float64 {
+	switch strings.ToUpper(strings.TrimSpace(unit)) {
+	case "WH":
+		return 0.001
+	case "MWH":
+		return 1000
+	default: // kWh or unknown
+		return 1
+	}
+}
+
+type reconBucket struct{ kwh, coverage float64 }
+
+// utilityReconciliation returns, per billing bucket (keyed by bucket-start Unix
+// seconds), the energy winnow's OWN published (else is-mine) electric meter(s)
+// recorded — counter delta × pub_multiplier → kWh — plus that bucket's capture
+// coverage. This is the "is winnow tracking the bill?" overlay. Also returns the
+// eligible meter ids backing the line.
+func (d *DB) utilityReconciliation(ctx context.Context, statID, period string) (map[int64]reconBucket, []int64, error) {
+	out := map[int64]reconBucket{}
+	meters := []int64{}
+
+	mrows, err := d.pool.Query(ctx, `
+SELECT mi.endpoint_id
+FROM meter_index mi JOIN meters m ON m.endpoint_id = mi.endpoint_id
+WHERE (m.publish OR m.is_mine) AND mi.endpoint_type IN (4,5,7,8,12,13)
+ORDER BY mi.endpoint_id`)
+	if err != nil {
+		return out, meters, err
+	}
+	for mrows.Next() {
+		var id int64
+		if err := mrows.Scan(&id); err != nil {
+			mrows.Close()
+			return out, meters, err
+		}
+		meters = append(meters, id)
+	}
+	mrows.Close()
+	if err := mrows.Err(); err != nil {
+		return out, meters, err
+	}
+	if len(meters) == 0 {
+		return out, meters, nil // no published/mine electric meter to reconcile against
+	}
+
+	rows, err := d.pool.Query(ctx, `
+WITH ub AS (
+  SELECT ts AS bstart, lead(ts) OVER (ORDER BY ts) AS bend
+  FROM utility_energy WHERE statistic_id=$1 AND period=$2),
+span AS (SELECT min(bstart) AS lo, max(coalesce(bend,bstart)) AS hi FROM ub),
+pm AS (
+  SELECT mi.endpoint_id,
+         coalesce(m.pub_multiplier,1) AS mult,
+         CASE WHEN mi.msg_type='SCM' THEN 16777216.0 ELSE 4294967296.0 END AS modulus
+  FROM meter_index mi JOIN meters m ON m.endpoint_id = mi.endpoint_id
+  WHERE (m.publish OR m.is_mine) AND mi.endpoint_type IN (4,5,7,8,12,13)),
+hourly AS (
+  SELECT r.endpoint_id, time_bucket('1 hour', r.bucket) AS h,
+         max(r.max_c) AS cmax, pm.modulus, pm.mult
+  FROM readings_1m r JOIN pm ON pm.endpoint_id = r.endpoint_id
+  WHERE r.bucket >= (SELECT lo FROM span) AND r.bucket < (SELECT hi FROM span)
+  GROUP BY r.endpoint_id, h, pm.modulus, pm.mult),
+stepped AS (
+  SELECT endpoint_id, h, modulus, mult,
+         cmax - lag(cmax) OVER (PARTITION BY endpoint_id ORDER BY h) AS raw
+  FROM hourly),
+mdelta AS (
+  SELECT endpoint_id, h, mult, `+rolloverDeltaSQL("raw", "modulus")+` AS delta
+  FROM stepped),
+joined AS (
+  SELECT b.bstart, b.bend, m.h, m.delta * m.mult AS kwh
+  FROM ub b JOIN mdelta m ON m.h >= b.bstart AND m.h < b.bend
+  WHERE b.bend IS NOT NULL AND m.delta IS NOT NULL)
+SELECT bstart,
+       sum(kwh)                                    AS meter_kwh,
+       count(DISTINCT h)                           AS covered_hours,
+       EXTRACT(EPOCH FROM (bend - bstart))/3600.0  AS bucket_hours
+FROM joined
+GROUP BY bstart, bend
+ORDER BY bstart`, statID, period)
+	if err != nil {
+		return out, meters, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var bstart time.Time
+		var kwh, coveredHours, bucketHours float64
+		if err := rows.Scan(&bstart, &kwh, &coveredHours, &bucketHours); err != nil {
+			return out, meters, err
+		}
+		cov := 1.0
+		if bucketHours > 0 {
+			cov = clamp01(coveredHours / bucketHours)
+		}
+		out[bstart.Unix()] = reconBucket{kwh: kwh, coverage: cov}
+	}
+	return out, meters, rows.Err()
+}
+
+// UtilitySeries returns the configured statistic's billed-energy series (all
+// buckets, converted to kWh) annotated with cost and — for bill reconciliation —
+// what winnow's published meter recorded for the same periods. Backs the
+// standalone "Utility bill" dashboard view.
+func (d *DB) UtilitySeries(ctx context.Context) (*model.UtilitySeriesResult, error) {
+	cfg, err := d.LoadConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	res := &model.UtilitySeriesResult{
+		StatisticID:     cfg.UtilityStatisticID,
+		Unit:            "kWh",
+		Currency:        cfg.Currency,
+		CostPerKwh:      cfg.CostPerKwh,
+		Points:          []model.UtilitySeriesPoint{},
+		ReconcileMeters: []int64{},
+	}
+	if cfg.UtilityStatisticID == "" {
+		return res, nil
+	}
+	period := d.resolvedPeriod(ctx, cfg.UtilityStatisticID)
+	res.Period = period
+	factor := kwhFactor(cfg.UtilityUnit)
+
+	recon, meters, rerr := d.utilityReconciliation(ctx, cfg.UtilityStatisticID, period)
+	if rerr == nil {
+		res.ReconcileMeters = meters
+	} else {
+		recon = nil // reconciliation is a bonus; the bill still renders without it
+	}
+
+	rows, err := d.pool.Query(ctx,
+		`SELECT ts, kwh FROM utility_energy WHERE statistic_id=$1 AND period=$2 ORDER BY ts`,
+		cfg.UtilityStatisticID, period)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ts time.Time
+		var raw float64
+		if err := rows.Scan(&ts, &raw); err != nil {
+			return nil, err
+		}
+		kwh := raw * factor
+		pt := model.UtilitySeriesPoint{TS: ts.UTC().Format(time.RFC3339), Kwh: round(kwh, 3)}
+		if cfg.CostPerKwh > 0 {
+			c := round(kwh*cfg.CostPerKwh, 2)
+			pt.Cost = &c
+		}
+		if recon != nil {
+			if rc, ok := recon[ts.Unix()]; ok {
+				mk := round(rc.kwh, 3)
+				pt.MeterKwh = &mk
+				pt.CoveragePct = round(rc.coverage, 3)
+			}
+		}
+		res.TotalKwh += kwh
+		res.Points = append(res.Points, pt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	res.TotalKwh = round(res.TotalKwh, 3)
+	res.BucketCount = len(res.Points)
+	return res, nil
 }
 
 // utilityDailyEstimate spreads each monthly bill across its days: a flat level

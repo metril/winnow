@@ -1,7 +1,7 @@
 import {
-  Activity, Radio, Gauge, DollarSign, AlertTriangle, ArrowUpRight, Crosshair, Zap,
+  Activity, Radio, Gauge, DollarSign, AlertTriangle, ArrowUpRight, Crosshair, Zap, Receipt,
 } from "lucide-react";
-import { api, PublishedLive, Anomaly } from "../api";
+import { api, PublishedLive, Anomaly, UtilitySeries } from "../api";
 import { useLive, perMin } from "../live";
 import { useFetch } from "../fetch";
 import { useSourceLabels } from "../sources";
@@ -16,6 +16,7 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
   const { power, powerHistory, readings, configVersion, connectedAt } = useLive();
   const ov = useFetch(api.overview, [configVersion]);
   const health = useFetch(api.health, [configVersion]);
+  const util = useFetch(api.utilitySeries, [configVersion]);
   const srcLabel = useSourceLabels();
 
   const pubs = ov.data?.published || [];
@@ -61,6 +62,10 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
           value={ov.data?.cost_per_kwh ? `${cur}${fmt(costToday, 2)}` : "–"} unit={ov.data?.cost_per_kwh ? "" : "set tariff"} />
       </div>
 
+      {util.data?.statistic_id && util.data.points.length > 0 && (
+        <UtilityMini d={util.data} onNav={onNav} />
+      )}
+
       {/* Row 3 — alerts */}
       {anomalies.length > 0 && (
         <Card variant="alert">
@@ -99,6 +104,30 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
         </Card>
       </div>
     </Page>
+  );
+}
+
+function UtilityMini({ d, onNav }: { d: UtilitySeries; onNav: (v: View) => void }) {
+  const chart = useChartTheme();
+  const cur = d.currency || "$";
+  const latest = d.points[d.points.length - 1];
+  const recent = d.points.slice(-12).map((p) => p.kwh);
+  const tracking = latest?.meter_kwh != null && latest.kwh > 0
+    ? Math.round((latest.meter_kwh / latest.kwh) * 100) : null;
+  return (
+    <Card variant="interactive" onClick={() => onNav("utility")}>
+      <CardHeader title="Utility bill" icon={<Receipt size={16} />} subtitle={`Billed energy · ${d.period}`}
+        actions={<Button size="sm" variant="ghost" icon={<ArrowUpRight size={14} />} onClick={() => onNav("utility")}>View</Button>} />
+      <CardBody>
+        <div className="flex flex-wrap items-end gap-x-8 gap-y-3">
+          <Metric label={`Latest ${d.period}`} value={latest ? `${fmt(latest.kwh, 1)} kWh` : "–"} />
+          {latest?.cost != null && <Metric label="Latest cost" value={`${cur}${fmt(latest.cost, 2)}`} tone="text-good" />}
+          <Metric label={`Total (${d.bucket_count})`} value={`${fmt(d.total_kwh, 0)} kWh`} />
+          {tracking != null && <Metric label="winnow tracking" value={`${tracking}%`} tone={Math.abs(tracking - 100) <= 15 ? "text-good" : "text-gold"} />}
+          {recent.length > 1 && <div className="ml-auto h-10 w-40"><Sparkline data={recent} color={chart.gold} height={40} /></div>}
+        </div>
+      </CardBody>
+    </Card>
   );
 }
 

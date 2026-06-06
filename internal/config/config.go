@@ -33,7 +33,11 @@ const (
 	// KeyHATimeZone caches HA's configured IANA timezone (fetched by the worker), so
 	// calendar-period analysis (daily utility breakdowns) aligns to the user's local
 	// day rather than UTC.
-	KeyHATimeZone        = "ha_time_zone"
+	KeyHATimeZone = "ha_time_zone"
+	// KeyUtilityUnit is the selected statistic's native energy unit (Wh|kWh|MWh),
+	// captured when the user picks it, so stored values can be converted to kWh for
+	// display and cost.
+	KeyUtilityUnit       = "utility_unit"
 	KeyThresholdW        = "threshold_w"
 	KeyAutoWindow        = "auto_window"
 	KeyDefaultMultiplier = "default_multiplier"
@@ -100,6 +104,7 @@ type Config struct {
 	MonitoredEntities  []string
 	UtilityStatisticID string  // HA long-term-statistics id for billed whole-home energy
 	UtilityPeriod      string  // "auto" | "month" | "day" | "hour"
+	UtilityUnit        string  // selected statistic's native energy unit (Wh|kWh|MWh)
 	HATimeZone         string  // HA's IANA timezone for calendar-period analysis (default UTC)
 	ThresholdW         float64 // watts above the rolling baseline that opens an auto window
 	AutoWindow         bool    // opt-in: auto-detect appliance spikes into test windows
@@ -239,6 +244,7 @@ func FromMap(m map[string]string) Config {
 		MonitoredEntities:  parseEntities(get(KeyMonitoredEntities, "", "")),
 		UtilityStatisticID: strings.TrimSpace(get(KeyUtilityStatisticID, "", "")),
 		UtilityPeriod:      utilityPeriod(get(KeyUtilityPeriod, "", "auto")),
+		UtilityUnit:        get(KeyUtilityUnit, "", "kWh"),
 		HATimeZone:         get(KeyHATimeZone, "", "UTC"),
 		ThresholdW:         thr,
 		AutoWindow:         autoOn,
