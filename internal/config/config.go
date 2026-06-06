@@ -30,10 +30,14 @@ const (
 	// "auto" (probe finest available), "month", "day", or "hour".
 	KeyUtilityStatisticID = "utility_statistic_id"
 	KeyUtilityPeriod      = "utility_period"
-	KeyThresholdW         = "threshold_w"
-	KeyAutoWindow         = "auto_window"
-	KeyDefaultMultiplier  = "default_multiplier"
-	KeyDefaultUnit        = "default_unit"
+	// KeyHATimeZone caches HA's configured IANA timezone (fetched by the worker), so
+	// calendar-period analysis (daily utility breakdowns) aligns to the user's local
+	// day rather than UTC.
+	KeyHATimeZone        = "ha_time_zone"
+	KeyThresholdW        = "threshold_w"
+	KeyAutoWindow        = "auto_window"
+	KeyDefaultMultiplier = "default_multiplier"
+	KeyDefaultUnit       = "default_unit"
 
 	// Capture scan settings (read live by the capture service).
 	KeyScanFreq     = "scan_freq"
@@ -96,6 +100,7 @@ type Config struct {
 	MonitoredEntities  []string
 	UtilityStatisticID string  // HA long-term-statistics id for billed whole-home energy
 	UtilityPeriod      string  // "auto" | "month" | "day" | "hour"
+	HATimeZone         string  // HA's IANA timezone for calendar-period analysis (default UTC)
 	ThresholdW         float64 // watts above the rolling baseline that opens an auto window
 	AutoWindow         bool    // opt-in: auto-detect appliance spikes into test windows
 	DefaultMultiplier  float64
@@ -234,6 +239,7 @@ func FromMap(m map[string]string) Config {
 		MonitoredEntities:  parseEntities(get(KeyMonitoredEntities, "", "")),
 		UtilityStatisticID: strings.TrimSpace(get(KeyUtilityStatisticID, "", "")),
 		UtilityPeriod:      utilityPeriod(get(KeyUtilityPeriod, "", "auto")),
+		HATimeZone:         get(KeyHATimeZone, "", "UTC"),
 		ThresholdW:         thr,
 		AutoWindow:         autoOn,
 		DefaultMultiplier:  mult,

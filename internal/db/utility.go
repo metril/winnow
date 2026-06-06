@@ -250,7 +250,7 @@ func (d *DB) UtilityCompare(ctx context.Context, meterID int64) (*model.UtilityC
 		res.Buckets = append(res.Buckets, pt)
 	}
 	if period == "month" {
-		res.DailyEstimate = d.utilityDailyEstimate(ctx, meterID, statID, cfg.MonitoredEntities, mult)
+		res.DailyEstimate = d.utilityDailyEstimate(ctx, meterID, statID, cfg.MonitoredEntities, mult, cfg.HATimeZone)
 	}
 	return res, nil
 }
@@ -272,19 +272,31 @@ func (d *DB) resolvedPeriod(ctx context.Context, statID string) string {
 // monitored_month) when monitored sensors exist, alongside the candidate's actual
 // metered energy per day. The flat line is for eyeballing/reconciliation; the
 // shaped curve is the only one with day-to-day variance to correlate against.
-func (d *DB) utilityDailyEstimate(ctx context.Context, meterID int64, statID string, entities []string, mult float64) []model.UtilityDayEstimate {
+//
+// All day/month boundaries are taken in `tz` (HA's timezone) so the breakdown
+// aligns to the user's local calendar day, not UTC: utility-bucket starts and
+// meter readings are bucketed by their LOCAL calendar date (`AT TIME ZONE`,
+// DST-safe via the date type), and the monitored-energy spans are built at local
+// midnight via a time.Location.
+func (d *DB) utilityDailyEstimate(ctx context.Context, meterID int64, statID string, entities []string, mult float64, tz string) []model.UtilityDayEstimate {
 	out := []model.UtilityDayEstimate{}
+	loc, err := time.LoadLocation(tz)
+	if err != nil || tz == "" {
+		loc, tz = time.UTC, "UTC"
+	}
 	rows, err := d.pool.Query(ctx, `
 WITH ub AS (
   SELECT ts AS bstart, lead(ts) OVER (ORDER BY ts) AS bend, kwh
   FROM utility_energy WHERE statistic_id=$1 AND period='month'),
 days AS (
-  SELECT b.bstart, b.bend, b.kwh,
-         generate_series(date_trunc('day', b.bstart), b.bend - interval '1 day', interval '1 day') AS day,
-         EXTRACT(DAY FROM (b.bend - b.bstart)) AS ndays
+  SELECT b.kwh,
+         generate_series((b.bstart AT TIME ZONE $3)::date,
+                         (b.bend   AT TIME ZONE $3)::date - 1,
+                         interval '1 day')::date AS day,
+         ((b.bend AT TIME ZONE $3)::date - (b.bstart AT TIME ZONE $3)::date) AS ndays
   FROM ub b WHERE b.bend IS NOT NULL),
 mday AS (
-  SELECT time_bucket('1 day', r.bucket) AS day,
+  SELECT (r.bucket AT TIME ZONE $3)::date AS day,
          max(r.max_c) AS cmax,
          CASE WHEN mi.msg_type='SCM' THEN 16777216.0 ELSE 4294967296.0 END AS modulus
   FROM readings_1m r JOIN meter_index mi USING (endpoint_id)
@@ -294,16 +306,17 @@ mstep AS (
   SELECT day, modulus, cmax - lag(cmax) OVER (ORDER BY day) AS raw FROM mday),
 mdelta AS (
   SELECT day, `+rolloverDeltaSQL("raw", "modulus")+` AS delta FROM mstep)
-SELECT d.day, d.kwh / nullif(d.ndays,0) AS flat, md.delta AS meter_delta
+SELECT d.day, d.kwh, d.kwh / nullif(d.ndays,0) AS flat, md.delta AS meter_delta
 FROM days d
 LEFT JOIN mdelta md ON md.day = d.day
-ORDER BY d.day`, statID, meterID)
+ORDER BY d.day`, statID, meterID, tz)
 	if err != nil {
 		return out
 	}
 	defer rows.Close()
 	type row struct {
 		day        time.Time
+		monthKwh   float64
 		flat       float64
 		meterDelta *float64
 	}
@@ -311,39 +324,35 @@ ORDER BY d.day`, statID, meterID)
 	for rows.Next() {
 		var r row
 		var flat *float64
-		if err := rows.Scan(&r.day, &flat, &r.meterDelta); err != nil {
+		if err := rows.Scan(&r.day, &r.monthKwh, &flat, &r.meterDelta); err != nil {
 			return out
 		}
 		r.flat = deref(flat)
 		drows = append(drows, r)
 	}
 	for _, r := range drows {
-		de := model.UtilityDayEstimate{Day: r.day.UTC().Format("2006-01-02"), FlatKwh: round(r.flat, 3)}
+		// r.day is a calendar date; rebuild local-midnight bounds in HA's tz.
+		y, m, dd := r.day.Date()
+		dayStart := time.Date(y, m, dd, 0, 0, 0, 0, loc)
+		dayEnd := dayStart.AddDate(0, 0, 1) // DST-safe next local midnight
+		de := model.UtilityDayEstimate{Day: dayStart.Format("2006-01-02"), FlatKwh: round(r.flat, 3)}
 		if r.meterDelta != nil && mult > 0 {
 			mk := round(*r.meterDelta*mult, 3)
 			de.MeterKwh = &mk
 		}
-		// profile-shaped estimate: needs the monitored daily/monthly energy split.
-		if len(entities) > 0 {
-			dayStart := r.day
-			dayEnd := r.day.Add(24 * time.Hour)
-			monStart := time.Date(r.day.Year(), r.day.Month(), 1, 0, 0, 0, 0, time.UTC)
+		// profile-shaped estimate: bill × (monitored energy this local day ÷ this
+		// local month). Needs monitored sensors.
+		if len(entities) > 0 && r.monthKwh > 0 {
+			monStart := time.Date(y, m, 1, 0, 0, 0, 0, loc)
 			monEnd := monStart.AddDate(0, 1, 0)
 			dayE := d.MonitoredEnergy(ctx, entities, dayStart, dayEnd)
 			monE := d.MonitoredEnergy(ctx, entities, monStart, monEnd)
 			if monE > 0 {
-				// reconstruct the month bill from the flat level × days for shaping.
-				monthBill := r.flat * float64(daysIn(r.day))
-				shaped := round(monthBill*(dayE/monE), 3)
+				shaped := round(r.monthKwh*(dayE/monE), 3)
 				de.ShapedKwh = &shaped
 			}
 		}
 		out = append(out, de)
 	}
 	return out
-}
-
-func daysIn(t time.Time) int {
-	first := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
-	return int(first.AddDate(0, 1, 0).Sub(first).Hours() / 24)
 }
