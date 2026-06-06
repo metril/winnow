@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.7.0](https://github.com/metril/winnow/compare/v1.6.0...v1.7.0) (2026-06-06)
+
+
+### Features
+
+* **utility:** dashboard view of billed energy + cost + bill reconciliation ([#11](https://github.com/metril/winnow/issues/11)) ([580334c](https://github.com/metril/winnow/commit/580334c335336ac8b45a45bfa2f1913ebe080048))
+
+
+### Bug Fixes
+
+* **identify:** align utility daily breakdown to HA's local timezone ([#10](https://github.com/metril/winnow/issues/10)) ([7b3a5a6](https://github.com/metril/winnow/commit/7b3a5a611f1b2bdc39b6fe3100c48539c54df0ba))
+
 ## [1.6.0](https://github.com/metril/winnow/compare/v1.5.0...v1.6.0) (2026-06-06)
 
 
