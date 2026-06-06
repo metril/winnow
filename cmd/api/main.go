@@ -105,6 +105,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/meters/{id}/export.csv", s.handleExportCSV)
 	mux.HandleFunc("GET /api/meters/{id}/profile", s.handleProfile)
 	mux.HandleFunc("GET /api/meters/{id}/benchmark", s.handleBenchmark)
+	mux.HandleFunc("GET /api/meters/{id}/utility-compare", s.handleUtilityCompare)
 	mux.HandleFunc("GET /api/series", s.handleSeries)
 
 	mux.HandleFunc("GET /api/overview", s.handleOverview)
@@ -123,6 +124,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/integrations/status", s.handleIntegrationsStatus)
 	mux.HandleFunc("GET /api/ha/power-entities", s.handlePowerEntities)
 	mux.HandleFunc("POST /api/ha/create-helper", s.handleCreateHelper)
+	mux.HandleFunc("GET /api/ha/utility-statistics", s.handleUtilityStatistics)
 
 	mux.HandleFunc("GET /api/devices", s.handleDevices)
 	mux.HandleFunc("PUT /api/devices/{serial}", s.handlePutDevice)

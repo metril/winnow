@@ -30,7 +30,8 @@ type worker struct {
 	cfg        config.Config
 	publishSet map[int64]model.Meter // meters to publish, by id
 
-	haRestart chan struct{} // signal the HA loop to reconnect with new cfg
+	haRestart   chan struct{} // signal the HA loop to reconnect with new cfg
+	utilRestart chan struct{} // signal the utility backfill loop to re-run with new cfg
 
 	aw autoState // auto-window detector state (touched only by the single-threaded HA callback)
 }
@@ -63,14 +64,16 @@ func main() {
 		log.Printf("[worker] schema init: %v", err)
 	}
 
-	w := &worker{d: d, pub: mqtt.NewPublisher(), publishSet: map[int64]model.Meter{}, haRestart: make(chan struct{}, 1)}
+	w := &worker{d: d, pub: mqtt.NewPublisher(), publishSet: map[int64]model.Meter{},
+		haRestart: make(chan struct{}, 1), utilRestart: make(chan struct{}, 1)}
 	defer w.pub.Close()
 	w.reloadConfig(ctx)
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); w.listenLoop(ctx) }()
 	go func() { defer wg.Done(); w.haLoop(ctx) }()
+	go func() { defer wg.Done(); w.utilityLoop(ctx) }()
 	wg.Wait()
 }
 
@@ -110,6 +113,10 @@ func (w *worker) reloadConfig(ctx context.Context) {
 	w.refreshPublishSet(ctx)
 	select {
 	case w.haRestart <- struct{}{}:
+	default:
+	}
+	select {
+	case w.utilRestart <- struct{}{}:
 	default:
 	}
 }
@@ -284,6 +291,70 @@ func (w *worker) haLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// utilityLoop keeps the billed-energy table (utility_energy) fresh from HA
+// long-term statistics. This is an EXPLICIT scheduled backfill, NOT live polling:
+// utility data is only released ~twice daily with a ~48h lag and has no live
+// state to subscribe to, so a 12h cadence (plus startup + on config change)
+// matches the source and respects winnow's no-live-polling rule.
+func (w *worker) utilityLoop(ctx context.Context) {
+	for ctx.Err() == nil {
+		w.mu.RLock()
+		cfg := w.cfg
+		w.mu.RUnlock()
+		if cfg.HAConfigured() && cfg.UtilityConfigured() {
+			if err := w.backfillUtility(ctx, cfg); err != nil {
+				log.Printf("[worker] utility backfill: %v", err)
+			}
+		}
+		if !waitOrRestart(ctx, 12*time.Hour, w.utilRestart) {
+			return
+		}
+	}
+}
+
+// backfillUtility fetches a trailing window of the configured statistic at the
+// configured (or auto-probed) period, normalizes monotonic sums to per-bucket
+// kWh, and idempotently upserts. ~13 months of trailing data gives enough billing
+// buckets for cross-bucket multiplier stability.
+func (w *worker) backfillUtility(ctx context.Context, cfg config.Config) error {
+	fctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	end := time.Now().UTC()
+	start := end.AddDate(0, 0, -397)
+	statID := cfg.UtilityStatisticID
+
+	var period string
+	var points []ha.StatPoint
+	var err error
+	if cfg.UtilityPeriod == "auto" || cfg.UtilityPeriod == "" {
+		period, points, err = ha.ResolvePeriod(fctx, cfg.HAURL, cfg.HAToken, statID, start, end)
+	} else {
+		period = cfg.UtilityPeriod
+		points, err = ha.StatisticsDuringPeriod(fctx, cfg.HAURL, cfg.HAToken, statID, start, end, period)
+	}
+	if err != nil {
+		return err
+	}
+	samples := ha.BucketDeltas(points)
+	if len(samples) == 0 {
+		log.Printf("[worker] utility: no statistics returned for %s", statID)
+		return nil
+	}
+	ts := make([]time.Time, len(samples))
+	kwh := make([]float64, len(samples))
+	for i, s := range samples {
+		ts[i], kwh[i] = s.TS, s.Kwh
+	}
+	if err := w.d.UpsertUtilityEnergy(ctx, statID, period, ts, kwh); err != nil {
+		return err
+	}
+	// drop any rows under a now-stale period/statistic so the evidence query is
+	// unambiguous (e.g. after switching auto→month or picking a different stat).
+	_ = w.d.KeepOnlyUtility(ctx, statID, period)
+	log.Printf("[worker] utility backfill: %s period=%s buckets=%d", statID, period, len(samples))
+	return nil
 }
 
 // buildEntityInfo resolves each monitored entity's kind + unit factor from HA.

@@ -44,6 +44,21 @@ CREATE TABLE IF NOT EXISTS reference_samples (
 );
 CREATE INDEX IF NOT EXISTS idx_ref_entity_ts ON reference_samples(entity_id, ts);
 
+-- utility_energy holds the user's billed energy pulled from HA long-term
+-- statistics (e.g. the Opower/Eversource integration), one row per period bucket
+-- normalized to consumed kWh. This is the user's REAL whole-home meter, used as
+-- an independent magnitude anchor + reconciliation for identification. ts is in
+-- the PK so the upsert is idempotent (the backfill re-fetches a trailing window
+-- to absorb late utility revisions) and to satisfy Timescale's unique-key rule.
+CREATE TABLE IF NOT EXISTS utility_energy (
+    ts           TIMESTAMPTZ NOT NULL,
+    statistic_id TEXT        NOT NULL,
+    period       TEXT        NOT NULL,
+    kwh          DOUBLE PRECISION,
+    PRIMARY KEY (statistic_id, period, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_utility_stat_ts ON utility_energy(statistic_id, period, ts);
+
 CREATE TABLE IF NOT EXISTS test_windows (
     id              SERIAL PRIMARY KEY,
     label           TEXT,
@@ -113,6 +128,7 @@ var timescaleSteps = []string{
 	`CREATE EXTENSION IF NOT EXISTS timescaledb`,
 	`SELECT create_hypertable('readings', 'ts', if_not_exists => TRUE, migrate_data => TRUE)`,
 	`SELECT create_hypertable('reference_samples', 'ts', if_not_exists => TRUE, migrate_data => TRUE)`,
+	`SELECT create_hypertable('utility_energy', 'ts', if_not_exists => TRUE, migrate_data => TRUE)`,
 	`CREATE MATERIALIZED VIEW IF NOT EXISTS readings_1m
 	   WITH (timescaledb.continuous) AS
 	   SELECT endpoint_id,

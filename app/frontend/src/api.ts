@@ -73,6 +73,13 @@ export interface Status {
 }
 
 export interface PowerEntity { entity_id: string; name: string; state: string; unit: string; kind: string; }
+export interface UtilityStat { id: string; name: string; unit: string; }
+export interface UtilityComparePoint { ts: string; utility_kwh: number; meter_kwh: number | null; coverage_pct: number; }
+export interface UtilityDayEstimate { day: string; flat_kwh: number; shaped_kwh: number | null; meter_kwh: number | null; }
+export interface UtilityCompare {
+  statistic_id: string; period: string; utility_multiplier: number | null;
+  buckets_covered: number; buckets: UtilityComparePoint[]; daily_estimate?: UtilityDayEstimate[];
+}
 
 export interface ScanSettings { freq: string; gain: string; ppm: string; msgtype: string; filterid: string; }
 export interface Device extends ScanSettings {
@@ -153,6 +160,8 @@ export const api = {
   powerEntities: () => j<PowerEntity[]>("/api/ha/power-entities"),
   createHelper: (name: string, entities: string[]) =>
     j<any>("/api/ha/create-helper", { method: "POST", body: JSON.stringify({ name, entities }) }),
+  utilityStatistics: () => j<UtilityStat[]>("/api/ha/utility-statistics"),
+  utilityCompare: (id: number) => j<UtilityCompare>(`/api/meters/${id}/utility-compare`),
 
   devices: () => j<DevicesResp>("/api/devices"),
   putDevice: (serial: string, body: DeviceConfig) =>

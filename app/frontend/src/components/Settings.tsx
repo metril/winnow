@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Server, Send, Activity, DollarSign, Sliders, RefreshCw } from "lucide-react";
-import { api, PowerEntity, Status } from "../api";
+import { Server, Send, Activity, DollarSign, Sliders, RefreshCw, Gauge } from "lucide-react";
+import { api, PowerEntity, Status, UtilityStat } from "../api";
 import { fmt } from "../util";
 import { Page } from "./shell";
 import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, Toggle, InfoHint, useToast } from "../ui";
@@ -18,7 +18,7 @@ export default function Settings() {
 
   const save = () => {
     const body: Record<string, string> = {};
-    ["ha_url", "ha_token", "mqtt_host", "mqtt_port", "mqtt_user", "mqtt_pass", "mqtt_prefix", "threshold_w", "auto_window", "default_multiplier", "default_unit", "cost_per_kwh", "currency"]
+    ["ha_url", "ha_token", "mqtt_host", "mqtt_port", "mqtt_user", "mqtt_pass", "mqtt_prefix", "threshold_w", "auto_window", "default_multiplier", "default_unit", "cost_per_kwh", "currency", "utility_statistic_id", "utility_period"]
       .forEach((k) => { if (s[k] !== undefined && s[k] !== "") body[k] = String(s[k]); });
     return api.putSettings(body).then(load);
   };
@@ -58,6 +58,9 @@ export default function Settings() {
       </div>
 
       <MonitoredConsumption />
+
+      <UtilityBill value={field("utility_statistic_id")} period={field("utility_period") || "auto"}
+        onPick={(id) => set("utility_statistic_id", id)} onPeriod={(p) => set("utility_period", p)} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
@@ -100,6 +103,55 @@ export default function Settings() {
         </Card>
       </div>
     </Page>
+  );
+}
+
+function UtilityBill({ value, period, onPick, onPeriod }: {
+  value: string; period: string; onPick: (id: string) => void; onPeriod: (p: string) => void;
+}) {
+  const [stats, setStats] = useState<UtilityStat[] | null>(null);
+  const load = () => api.utilityStatistics().then(setStats);
+  return (
+    <Card>
+      <CardHeader title="Utility bill (Opower)" icon={<Gauge size={16} />}
+        subtitle="Your billed whole-home energy from HA long-term statistics — an independent check on which meter is yours, and an absolute calibration source."
+        actions={value ? <Badge tone="brand">selected</Badge> : <Badge tone="default">not set</Badge>} />
+      <CardBody className="space-y-3">
+        <p className="text-micro text-tertiary">
+          Opower stores billed energy as HA <b>statistics</b> (not a normal sensor), often only monthly
+          and ~2 days delayed — so this powers the combined ranking &amp; the per-meter “vs utility” chart,
+          not the live 2-hour Identify.
+        </p>
+        <div className="flex flex-wrap items-end gap-2">
+          <Button onClick={load}>Load utility statistics</Button>
+          {value && <span className="mono text-micro text-tertiary">current: {value}</span>}
+        </div>
+        {stats && (
+          <div className="space-y-2">
+            {stats.length === 0
+              ? <p className="text-small text-tertiary">No energy statistics found. Set up the Opower integration in HA, then reload.</p>
+              : <div className="max-h-56 overflow-y-auto rounded-lg border border-border bg-app/40 p-2">
+                {stats.map((st) => (
+                  <label key={st.id} className="flex items-center gap-2 rounded px-2 py-1 text-small hover:bg-raised">
+                    <input type="radio" name="utilstat" className="accent-brand" checked={value === st.id} onChange={() => onPick(st.id)} />
+                    <span>{st.name}</span><span className="mono text-micro text-tertiary">{st.id}</span>
+                    <span className="ml-auto text-micro text-tertiary">{st.unit}</span>
+                  </label>
+                ))}
+              </div>}
+          </div>
+        )}
+        <Field label={<>Granularity <InfoHint>How finely to fetch the bill. “Auto” probes hourly → daily → monthly and uses the finest your utility provides. Eversource is typically monthly-only.</InfoHint></>}>
+          <select className="input w-40" value={period} onChange={(e) => onPeriod(e.target.value)}>
+            <option value="auto">Auto (recommended)</option>
+            <option value="month">Monthly</option>
+            <option value="day">Daily</option>
+            <option value="hour">Hourly</option>
+          </select>
+        </Field>
+        <p className="text-micro text-tertiary">After saving, the worker backfills the trailing ~13 months and refreshes twice daily.</p>
+      </CardBody>
+    </Card>
   );
 }
 

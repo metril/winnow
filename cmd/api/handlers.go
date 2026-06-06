@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -374,6 +375,40 @@ func (s *server) handlePowerEntities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, ents)
+}
+
+// handleUtilityStatistics lists the HA long-term ENERGY statistics (e.g. the
+// Opower/utility integration) the user can pick as their billed-energy source.
+func (s *server) handleUtilityStatistics(w http.ResponseWriter, r *http.Request) {
+	cfg, _ := s.d.LoadConfig(r.Context())
+	if !cfg.HAConfigured() {
+		writeJSON(w, []ha.StatID{})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	stats, err := ha.ListEnergyStatisticIDs(ctx, cfg.HAURL, cfg.HAToken)
+	if err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
+	writeJSON(w, stats)
+}
+
+// handleUtilityCompare returns one meter's bill-vs-meter comparison (per billing
+// bucket + estimated-daily breakdown for monthly bills).
+func (s *server) handleUtilityCompare(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		badReq(w, "bad id")
+		return
+	}
+	res, err := s.d.UtilityCompare(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, res)
 }
 
 // handleCreateHelper asks HA to create a Group "sum" sensor over the selected

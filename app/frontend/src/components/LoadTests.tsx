@@ -5,7 +5,7 @@ import { useLive } from "../live";
 import { useFetch } from "../fetch";
 import { shortTs } from "../util";
 import { Page } from "./shell";
-import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, EmptyState, Skeleton, Table, Th, Td } from "../ui";
+import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, EmptyState, Skeleton, Table, Th, Td, InfoHint } from "../ui";
 import { ConfidenceBar } from "./charts";
 
 export default function LoadTests() {
@@ -51,17 +51,22 @@ export default function LoadTests() {
       {combined.data?.ranking?.length > 0 && (
         <Card>
           <CardHeader title={<span className="inline-flex items-center gap-2"><Trophy size={16} className="text-gold" /> Combined ranking</span>}
-            subtitle={`Across ${combined.data.tests?.length || 0} completed tests — the meter that wins most is almost certainly yours.`} />
+            subtitle={combinedSubtitle(combined.data)} />
           <Table>
-            <thead><tr><Th>meter</Th><Th>commodity</Th><Th className="w-40">confidence</Th><Th num>avg r</Th><Th num>wins</Th></tr></thead>
+            <thead><tr><Th>meter</Th><Th>commodity</Th><Th className="w-40">confidence</Th><Th num>avg r</Th>
+              <Th num>utility ×<InfoHint>The multiplier (kWh per meter count) implied by your utility bill, and — when the bill is hourly/daily — the per-bucket correlation. A meter whose bill multiplier is consistent and agrees with the load-test calibration is very likely yours.</InfoHint></Th>
+              <Th num>wins</Th></tr></thead>
             <tbody>
               {combined.data.ranking.slice(0, 10).map((r: any, i: number) => (
                 <tr key={r.endpoint_id} className={"border-b border-border/60 " + (i === 0 ? "bg-gold/5" : "")}>
                   <Td><span className="id-pill">#{r.endpoint_id}</span></Td>
                   <Td className="text-secondary">{r.commodity}</Td>
-                  <Td>{r.confidence != null ? <ConfidenceBar r={r.confidence} title={r.anchor_multiplier != null ? `known-load ×${Number(r.anchor_multiplier).toPrecision(3)}` : undefined} /> : <span className="text-tertiary">–</span>}</Td>
+                  <Td>{r.confidence != null ? <ConfidenceBar r={r.confidence} title={confTitle(r)} /> : <span className="text-tertiary">–</span>}</Td>
                   <Td num>{r.avg_r != null ? r.avg_r.toFixed(2) : "–"}</Td>
-                  <Td num className={i === 0 ? "text-gold" : ""}>{r.wins}/{r.tests_total}</Td>
+                  <Td num className="text-secondary">{r.utility_multiplier != null
+                    ? <span title={`${r.utility_buckets_covered || 0} billing bucket(s)`}>×{Number(r.utility_multiplier).toPrecision(3)}{r.utility_r != null ? ` · r${Number(r.utility_r).toFixed(2)}` : ""}</span>
+                    : <span className="text-tertiary">–</span>}</Td>
+                  <Td num className={i === 0 ? "text-gold" : ""}>{r.tests_total > 0 ? `${r.wins}/${r.tests_total}` : "–"}</Td>
                 </tr>
               ))}
             </tbody>
@@ -78,6 +83,25 @@ export default function LoadTests() {
       </Card>
     </Page>
   );
+}
+
+function combinedSubtitle(d: any): string {
+  const n = d.tests?.length || 0;
+  const hasUtil = (d.ranking || []).some((r: any) => r.utility_multiplier != null);
+  if (n > 0 && hasUtil) return `Across ${n} completed test(s) plus your utility bill — the meter that agrees with both is almost certainly yours.`;
+  if (n > 0) return `Across ${n} completed test(s) — the meter that wins most is almost certainly yours.`;
+  if (hasUtil) return "From your utility bill — meters whose counter tracks your billed energy. Run load tests to confirm.";
+  return "Run load tests (or connect a utility bill in Settings) to rank candidates.";
+}
+
+// confTitle builds a hover breakdown for a combined-ranking row.
+function confTitle(r: any): string {
+  return [
+    r.suggested_multiplier != null ? `regression ×${Number(r.suggested_multiplier).toPrecision(3)}` : null,
+    r.anchor_multiplier != null ? `known-load ×${Number(r.anchor_multiplier).toPrecision(3)}` : null,
+    r.utility_multiplier != null ? `utility ×${Number(r.utility_multiplier).toPrecision(3)}` : null,
+    r.multiplier_cov != null ? `stability CoV ${Number(r.multiplier_cov).toFixed(2)}` : null,
+  ].filter(Boolean).join(" · ");
 }
 
 function TestRow({ t, onChange }: { t: TestWindow; onChange: () => void }) {
