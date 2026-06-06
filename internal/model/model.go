@@ -78,6 +78,7 @@ type CorrRow struct {
 	BaselineW           *float64 `json:"baseline_w"`           // unmonitored baseline (intercept)
 	SuggestedMultiplier *float64 `json:"suggested_multiplier"` // kWh per meter-unit (regression)
 	AnchorMultiplier    *float64 `json:"anchor_multiplier"`    // kWh per meter-unit (known-load anchor)
+	UtilityMultiplier   *float64 `json:"utility_multiplier"`   // kWh per meter-unit (utility-bill anchor)
 	MeterEnergyKwh      *float64 `json:"meter_energy_kwh"`     // candidate energy over window at suggested calibration
 	FloorOK             *bool    `json:"floor_ok"`             // calibrated min ≥ monitored floor
 	LagBuckets          *int     `json:"lag_buckets"`          // best meter-vs-reference lag (buckets)
@@ -90,6 +91,35 @@ type CorrRow struct {
 	// annotations (so the ranking can show/toggle tracked & published state)
 	IsMine  bool `json:"is_mine"`
 	Publish bool `json:"publish"`
+}
+
+// UtilityComparePoint is one period bucket aligning the meter's metered energy
+// against the utility bill (and, for monthly data, an estimated-daily breakdown).
+type UtilityComparePoint struct {
+	TS          string   `json:"ts"`           // bucket start (RFC3339)
+	UtilityKwh  float64  `json:"utility_kwh"`  // billed energy this bucket
+	MeterKwh    *float64 `json:"meter_kwh"`    // candidate's metered energy this bucket (at the utility multiplier)
+	CoveragePct float64  `json:"coverage_pct"` // fraction of the bucket winnow actually covered (0..1)
+}
+
+// UtilityDayEstimate is one day's estimated usage derived from a coarse (monthly)
+// bill: a flat (bill/days) level and, when monitored sensors exist, a profile-
+// shaped estimate. MeterKwh is the candidate's actual metered energy that day.
+type UtilityDayEstimate struct {
+	Day       string   `json:"day"`        // YYYY-MM-DD
+	FlatKwh   float64  `json:"flat_kwh"`   // bill / days-in-month
+	ShapedKwh *float64 `json:"shaped_kwh"` // bill × monitored_day/monitored_month (nil if no monitored sensors)
+	MeterKwh  *float64 `json:"meter_kwh"`  // candidate's metered energy that day (at the utility multiplier)
+}
+
+// UtilityCompareResult backs the per-meter "compare vs utility bill" panel.
+type UtilityCompareResult struct {
+	StatisticID       string                `json:"statistic_id"`
+	Period            string                `json:"period"` // resolved: month|day|hour
+	UtilityMultiplier *float64              `json:"utility_multiplier"`
+	BucketsCovered    int                   `json:"buckets_covered"`
+	Buckets           []UtilityComparePoint `json:"buckets"`
+	DailyEstimate     []UtilityDayEstimate  `json:"daily_estimate,omitempty"`
 }
 
 // TestWindow is a load-test span (manual or auto from the plug). KnownLoadW /

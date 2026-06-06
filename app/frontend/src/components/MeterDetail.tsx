@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Star, Radio, EyeOff, Eye, Terminal, Download, CalendarClock, Copy } from "lucide-react";
-import { api, HeatCell, DailyPoint, Benchmark } from "../api";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Star, Radio, EyeOff, Eye, Terminal, Download, CalendarClock, Copy, Gauge } from "lucide-react";
+import { api, HeatCell, DailyPoint, Benchmark, UtilityCompare } from "../api";
 import { fmt, shortTs, tsMs, since, copyText } from "../util";
 import { Heatmap } from "./charts";
 import { useChartTheme } from "./chartTheme";
 import { Button, Input, Field, Badge, Tabs, Segmented, Skeleton, EmptyState, IconButton, InfoHint, useToast } from "../ui";
 
-type DTab = "timeline" | "heatmap" | "daily";
+type DTab = "timeline" | "heatmap" | "daily" | "utility";
 const tickFmt = (t: number) => shortTs(new Date(t).toISOString()).slice(5, 16);
 
 export default function MeterDetail({ id, hours, onChange }: { id: number; hours: number; onChange?: () => void }) {
@@ -32,7 +32,7 @@ export default function MeterDetail({ id, hours, onChange }: { id: number; hours
       <div className="flex flex-wrap items-center gap-3">
         <span className="id-pill text-small">#{id}</span>
         {ann.publish ? <Badge tone="gold"><Radio size={11} /> publishing</Badge> : ann.is_mine ? <Badge tone="brand">tracked</Badge> : null}
-        <div className="ml-auto"><Tabs tabs={[{ id: "timeline", label: "Timeline" }, { id: "heatmap", label: "Heatmap" }, { id: "daily", label: "Daily" }]} value={tab} onChange={setTab} /></div>
+        <div className="ml-auto"><Tabs tabs={[{ id: "timeline", label: "Timeline" }, { id: "heatmap", label: "Heatmap" }, { id: "daily", label: "Daily" }, { id: "utility", label: "Utility" }]} value={tab} onChange={setTab} /></div>
       </div>
 
       {tab === "timeline" && (
@@ -70,6 +70,7 @@ export default function MeterDetail({ id, hours, onChange }: { id: number; hours
       )}
       {tab === "heatmap" && <HeatmapTab id={id} />}
       {tab === "daily" && <DailyTab id={id} />}
+      {tab === "utility" && <UtilityTab id={id} onCalibrated={() => { load(); onChange?.(); toast.show("Calibrated from utility bill", "good"); }} />}
 
       <div className="rounded-xl border border-border bg-app/40 p-4">
         <div className="label mb-2">Manage</div>
@@ -125,6 +126,77 @@ function DailyTab({ id }: { id: number }) {
           <Bar dataKey="v" fill={ch.brand} radius={[2, 2, 0, 0]} isAnimationActive={false} />
         </BarChart>
       </ResponsiveContainer>
+    </div>
+  );
+}
+
+function UtilityTab({ id, onCalibrated }: { id: number; onCalibrated: () => void }) {
+  const ch = useChartTheme();
+  const [c, setC] = useState<UtilityCompare | null>(null);
+  useEffect(() => { api.utilityCompare(id).then(setC).catch(() => setC({} as UtilityCompare)); }, [id]);
+  if (!c) return <Skeleton className="h-44" />;
+  if (!c.statistic_id) {
+    return <EmptyState icon={<Gauge size={20} />} title="No utility bill connected">
+      Pick your utility energy statistic (e.g. Opower/Eversource) in Settings → Utility bill to compare this meter against your bill.
+    </EmptyState>;
+  }
+  if (!c.buckets?.length) {
+    return <EmptyState icon={<Gauge size={20} />} title="No overlapping billing data yet">
+      This meter has no readings overlapping the billed periods for <span className="mono">{c.statistic_id}</span> ({c.period}). It becomes comparable once winnow has captured part of a billing period.
+    </EmptyState>;
+  }
+  const bars = c.buckets.map((b) => ({ t: b.ts.slice(0, 10), bill: b.utility_kwh, meter: b.meter_kwh, cov: Math.round(b.coverage_pct * 100) }));
+  const days = (c.daily_estimate || []).map((d) => ({ t: d.day.slice(5), flat: d.flat_kwh, shaped: d.shaped_kwh, meter: d.meter_kwh }));
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <Badge tone="brand">period {c.period}</Badge>
+        <Badge tone="default">{c.buckets_covered} billing bucket(s)</Badge>
+        {c.utility_multiplier != null && (
+          <>
+            <span className="text-small text-tertiary">bill multiplier <span className="text-text">×{c.utility_multiplier.toPrecision(3)}</span> kWh/count</span>
+            <Button size="sm" variant="gold"
+              onClick={() => api.patchMeter(id, { pub_multiplier: c.utility_multiplier!, pub_unit: "kWh" }).then(onCalibrated)}
+              success="Calibrated">Calibrate from bill</Button>
+          </>
+        )}
+        <InfoHint>Your utility bill is your real whole-home meter. The candidate whose metered total tracks the bill — at a stable multiplier — is yours. Partially-covered periods are prorated by how much winnow captured.</InfoHint>
+      </div>
+
+      <div>
+        <div className="label mb-1">Billed energy vs this meter (per {c.period})</div>
+        <ResponsiveContainer width="100%" height={190}>
+          <BarChart data={bars}>
+            <CartesianGrid {...ch.gridProps} />
+            <XAxis dataKey="t" {...ch.axisX} />
+            <YAxis tickFormatter={(v) => fmt(v)} {...ch.axisY} />
+            <Tooltip formatter={(v: any, n: any) => [fmt(v), n]} contentStyle={ch.tooltipStyle} />
+            <Legend />
+            <Bar name="bill kWh" dataKey="bill" fill={ch.gold} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+            <Bar name="meter kWh" dataKey="meter" fill={ch.brand} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      {days.length > 0 && (
+        <div>
+          <div className="label mb-1 flex items-center gap-1.5">Estimated daily usage
+            <InfoHint>For a monthly bill we estimate daily usage: a flat level (bill ÷ days) for reconciliation, and — when you have monitored sensors — a profile-shaped curve with real day-to-day variance. Your meter's daily totals should track these.</InfoHint>
+          </div>
+          <ResponsiveContainer width="100%" height={180}>
+            <LineChart data={days}>
+              <CartesianGrid {...ch.gridProps} />
+              <XAxis dataKey="t" {...ch.axisX} />
+              <YAxis tickFormatter={(v) => fmt(v)} {...ch.axisY} />
+              <Tooltip formatter={(v: any, n: any) => [fmt(v), n]} contentStyle={ch.tooltipStyle} />
+              <Legend />
+              <Line name="flat est." dataKey="flat" stroke={ch.gold} strokeDasharray="4 3" dot={false} strokeWidth={1.5} isAnimationActive={false} />
+              <Line name="shaped est." dataKey="shaped" stroke={ch.palette[2]} dot={false} strokeWidth={1.5} isAnimationActive={false} connectNulls />
+              <Line name="this meter" dataKey="meter" stroke={ch.brand} dot={false} strokeWidth={2} isAnimationActive={false} connectNulls />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 }

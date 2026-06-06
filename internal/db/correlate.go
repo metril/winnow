@@ -435,6 +435,11 @@ type AggRow struct {
 	MultiplierCoV    *float64 `json:"multiplier_cov"`    // coeff. of variation of the per-window multiplier
 	AnchorMultiplier *float64 `json:"anchor_multiplier"` // known-load anchor (mean across windows that had one)
 	SuggestedMult    *float64 `json:"suggested_multiplier"`
+	// utility-bill signal (independent of test windows): the candidate's metered
+	// energy vs the billed whole-home energy across billing buckets.
+	UtilityMultiplier *float64 `json:"utility_multiplier"` // coverage-weighted kWh per meter-unit
+	UtilityR          *float64 `json:"utility_r"`          // per-bucket correlation (hour/day periods)
+	UtilityBuckets    int      `json:"utility_buckets_covered"`
 }
 
 // CombinedRanking aggregates correlation across ALL closed windows (the meter
@@ -510,6 +515,31 @@ func (d *DB) aggregateWindows(ctx context.Context, useRef bool, src string, enti
 			}
 		}
 	}
+	// Utility-bill evidence is independent of test windows: it ranks meters by how
+	// their counter tracks the billed whole-home energy across billing buckets. Fetch
+	// it once (when configured) and merge into the ranking — including meters that
+	// never appeared in a test window (the common case before any load test is run).
+	// Utility-bill evidence is independent of both test windows and the monitored
+	// sensors: it ranks meters by how their counter tracks the billed whole-home
+	// energy across billing buckets. Fetch it once (when configured) and merge into
+	// the ranking — including meters that never appeared in a test window (the
+	// common case before any load test is run).
+	var util map[int64]*utilEvidence
+	var utilCommod map[int64]string
+	if cfg, cerr := d.LoadConfig(ctx); cerr == nil && cfg.UtilityConfigured() {
+		period := d.resolvedPeriod(ctx, cfg.UtilityStatisticID)
+		if u, uerr := d.utilityMeterEvidence(ctx, cfg.UtilityStatisticID, period); uerr == nil {
+			util = u // tolerate failure: utility is a bonus signal, never blocks ranking
+		}
+		missing := []int64{}
+		for id := range util {
+			if _, ok := per[id]; !ok {
+				missing = append(missing, id)
+			}
+		}
+		utilCommod, _ = d.meterCommodities(ctx, missing)
+	}
+
 	ranking := []AggRow{}
 	for id, a := range per {
 		row := AggRow{EndpointID: id, Commodity: a.commodity, Wins: a.wins,
@@ -521,14 +551,34 @@ func (d *DB) aggregateWindows(ctx context.Context, useRef bool, src string, enti
 			row.AvgR = &r
 		}
 		if useRef {
-			d.aggregateConfidence(&row, a.confs, a.mults, a.anchors)
+			d.aggregateConfidence(&row, a.confs, a.mults, a.anchors, util[id])
+		} else if util[id] != nil {
+			// no monitored-sensor reference, but still surface utility evidence + its
+			// (bounded) standalone confidence.
+			d.aggregateConfidence(&row, nil, nil, nil, util[id])
 		}
 		ranking = append(ranking, row)
 	}
+	// utility-only rows: electric meters with bill evidence but no window presence.
+	for id, e := range util {
+		if _, ok := per[id]; ok {
+			continue
+		}
+		if utilCommod[id] != "electric" {
+			continue
+		}
+		row := AggRow{EndpointID: id, Commodity: "electric", TestsTotal: len(used)}
+		d.aggregateConfidence(&row, nil, nil, nil, e)
+		ranking = append(ranking, row)
+	}
 	sort.SliceStable(ranking, func(i, j int) bool {
-		// in the reference path the composite confidence is the headline.
-		if useRef && ranking[i].Confidence != nil && ranking[j].Confidence != nil && *ranking[i].Confidence != *ranking[j].Confidence {
-			return *ranking[i].Confidence > *ranking[j].Confidence
+		// composite confidence (window and/or utility) is the headline when present.
+		ci, cj := ranking[i].Confidence, ranking[j].Confidence
+		if ci != nil && cj != nil && *ci != *cj {
+			return *ci > *cj
+		}
+		if (ci != nil) != (cj != nil) {
+			return ci != nil // a meter with any confidence ranks above one with none
 		}
 		if useRef && ranking[i].AvgR != nil && ranking[j].AvgR != nil && *ranking[i].AvgR != *ranking[j].AvgR {
 			return *ranking[i].AvgR > *ranking[j].AvgR
@@ -546,8 +596,21 @@ func (d *DB) aggregateWindows(ctx context.Context, useRef bool, src string, enti
 // across independent windows defeats single-window data-snooping) and by
 // calibration stability (a consistent multiplier across windows), and boosted
 // when a known-load anchor agrees with the regression multiplier.
-func (d *DB) aggregateConfidence(row *AggRow, confs, mults, anchors []float64) {
+func (d *DB) aggregateConfidence(row *AggRow, confs, mults, anchors []float64, util *utilEvidence) {
+	// Surface the utility-bill evidence on the row regardless of windows.
+	if util != nil {
+		row.UtilityMultiplier = util.multiplier
+		row.UtilityR = util.r
+		row.UtilityBuckets = util.bucketsCovered
+	}
 	if len(confs) == 0 {
+		// No test-window confidence — fall back to a (bounded) utility-only score so
+		// a meter that consistently tracks the bill still ranks before any load test.
+		if util != nil {
+			if uc := utilityOnlyConfidence(util); uc != nil {
+				row.Confidence = uc
+			}
+		}
 		return
 	}
 	avg := round(mean(confs), 3)
@@ -587,8 +650,71 @@ func (d *DB) aggregateConfidence(row *AggRow, confs, mults, anchors []float64) {
 			conf *= clamp01(1.2 - 0.3*(ratio-1)) // close agreement boosts, divergence cuts
 		}
 	}
+	// utility-bill agreement: an independent "second instrument". When the bill-
+	// derived multiplier agrees with the regression multiplier, that is strong
+	// cross-confirmation; divergence is a soft cut. Bounded so a poor/absent utility
+	// fit leaves the radio-only confidence essentially intact.
+	if util != nil && util.multiplier != nil && *util.multiplier > 0 {
+		ref := row.SuggestedMult
+		if ref == nil {
+			ref = row.AnchorMultiplier
+		}
+		if ref != nil && *ref > 0 {
+			ratio := *util.multiplier / *ref
+			if ratio < 1 {
+				ratio = 1 / ratio
+			}
+			conf *= clamp01(1.15 - 0.3*(ratio-1))
+		}
+	}
 	c := round(clamp01(conf), 3)
 	row.Confidence = &c
+}
+
+// utilityOnlyConfidence maps bill evidence alone (no test windows) to a bounded
+// 0..1 confidence: a meter whose per-bucket multiplier is consistent across
+// billing buckets — and, for fine-grained bills, correlates with the bill — is a
+// likely match. Capped (≤0.7) so stability alone never reads as a near-certain
+// identification without a load test or reference correlation to confirm it.
+func utilityOnlyConfidence(e *utilEvidence) *float64 {
+	if e == nil || e.bucketsCovered == 0 {
+		return nil
+	}
+	stab := 0.5 // single bucket: unknown stability
+	if e.cov != nil {
+		stab = clamp01(1 - *e.cov)
+	}
+	cover := clamp01(float64(e.bucketsCovered) / 3.0) // ~3 billing buckets → full credit
+	conf := stab * (0.5 + 0.5*cover)
+	if e.r != nil { // fine-grained bill: blend in the correlation
+		conf = 0.5*conf + 0.5*clamp01(*e.r)
+	}
+	c := round(clamp01(conf)*0.7, 3)
+	return &c
+}
+
+// meterCommodities returns the commodity ("electric"|"gas"|...) for the given
+// endpoint ids, derived from their endpoint type.
+func (d *DB) meterCommodities(ctx context.Context, ids []int64) (map[int64]string, error) {
+	out := map[int64]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := d.pool.Query(ctx,
+		`SELECT endpoint_id, endpoint_type FROM meter_index WHERE endpoint_id = ANY($1)`, ids)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var et *int
+		if err := rows.Scan(&id, &et); err != nil {
+			return out, err
+		}
+		out[id] = ert.Commodity(et)
+	}
+	return out, rows.Err()
 }
 
 func max(a, b float64) float64 {

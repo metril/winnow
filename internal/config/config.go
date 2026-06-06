@@ -24,10 +24,16 @@ const (
 	// the "total monitored consumption" ground truth. One entity = a single
 	// pre-aggregated sensor (power or energy/utility_meter); many = winnow sums.
 	KeyMonitoredEntities = "monitored_entities"
-	KeyThresholdW        = "threshold_w"
-	KeyAutoWindow        = "auto_window"
-	KeyDefaultMultiplier = "default_multiplier"
-	KeyDefaultUnit       = "default_unit"
+	// KeyUtilityStatisticID is the HA long-term-statistics id (e.g. an Opower
+	// "…_energy_consumption" statistic) carrying the user's billed whole-home
+	// energy. KeyUtilityPeriod is the bucket granularity to fetch it at:
+	// "auto" (probe finest available), "month", "day", or "hour".
+	KeyUtilityStatisticID = "utility_statistic_id"
+	KeyUtilityPeriod      = "utility_period"
+	KeyThresholdW         = "threshold_w"
+	KeyAutoWindow         = "auto_window"
+	KeyDefaultMultiplier  = "default_multiplier"
+	KeyDefaultUnit        = "default_unit"
 
 	// Capture scan settings (read live by the capture service).
 	KeyScanFreq     = "scan_freq"
@@ -80,21 +86,23 @@ func ParseAuthorizedAgents(v string) []AuthorizedAgent {
 
 // Config is the resolved runtime configuration.
 type Config struct {
-	HAURL             string
-	HAToken           string
-	MQTTHost          string
-	MQTTPort          int
-	MQTTUser          string
-	MQTTPass          string
-	MQTTPrefix        string
-	MonitoredEntities []string
-	ThresholdW        float64 // watts above the rolling baseline that opens an auto window
-	AutoWindow        bool    // opt-in: auto-detect appliance spikes into test windows
-	DefaultMultiplier float64
-	DefaultUnit       string
-	Capture           CaptureConfig
-	CostPerKwh        float64
-	Currency          string
+	HAURL              string
+	HAToken            string
+	MQTTHost           string
+	MQTTPort           int
+	MQTTUser           string
+	MQTTPass           string
+	MQTTPrefix         string
+	MonitoredEntities  []string
+	UtilityStatisticID string  // HA long-term-statistics id for billed whole-home energy
+	UtilityPeriod      string  // "auto" | "month" | "day" | "hour"
+	ThresholdW         float64 // watts above the rolling baseline that opens an auto window
+	AutoWindow         bool    // opt-in: auto-detect appliance spikes into test windows
+	DefaultMultiplier  float64
+	DefaultUnit        string
+	Capture            CaptureConfig
+	CostPerKwh         float64
+	Currency           string
 }
 
 // DeviceConfig is per-dongle capture configuration (keyed by source id). Every
@@ -136,11 +144,15 @@ func pick(override, def string) string {
 }
 
 // Effective per-dongle scan settings (override beats the global default).
-func (c CaptureConfig) DeviceFreq(source string) string     { return pick(c.Devices[source].Freq, c.Freq) }
-func (c CaptureConfig) DeviceGain(source string) string     { return pick(c.Devices[source].Gain, c.Gain) }
-func (c CaptureConfig) DevicePPM(source string) string      { return pick(c.Devices[source].PPM, c.PPM) }
-func (c CaptureConfig) DeviceMsgType(source string) string  { return pick(c.Devices[source].MsgType, c.MsgType) }
-func (c CaptureConfig) DeviceFilterID(source string) string { return pick(c.Devices[source].FilterID, c.FilterID) }
+func (c CaptureConfig) DeviceFreq(source string) string { return pick(c.Devices[source].Freq, c.Freq) }
+func (c CaptureConfig) DeviceGain(source string) string { return pick(c.Devices[source].Gain, c.Gain) }
+func (c CaptureConfig) DevicePPM(source string) string  { return pick(c.Devices[source].PPM, c.PPM) }
+func (c CaptureConfig) DeviceMsgType(source string) string {
+	return pick(c.Devices[source].MsgType, c.MsgType)
+}
+func (c CaptureConfig) DeviceFilterID(source string) string {
+	return pick(c.Devices[source].FilterID, c.FilterID)
+}
 
 func parseDevices(v string) map[string]DeviceConfig {
 	out := map[string]DeviceConfig{}
@@ -196,7 +208,8 @@ func FromMap(m map[string]string) Config {
 		port = 1883
 	}
 	thr, _ := strconv.ParseFloat(get(KeyThresholdW, "", "50"), 64)
-	autoWin := get(KeyAutoWindow, "", "0"); autoOn := autoWin == "1" || strings.EqualFold(autoWin, "true")
+	autoWin := get(KeyAutoWindow, "", "0")
+	autoOn := autoWin == "1" || strings.EqualFold(autoWin, "true")
 	mult, _ := strconv.ParseFloat(get(KeyDefaultMultiplier, "", "1"), 64)
 	if mult == 0 {
 		mult = 1
@@ -211,26 +224,41 @@ func FromMap(m map[string]string) Config {
 		Devices:  parseDevices(get(KeyCaptureDevices, "", "")),
 	}
 	return Config{
-		HAURL:             get(KeyHAURL, "HA_URL", ""),
-		HAToken:           get(KeyHAToken, "HA_TOKEN", ""),
-		MQTTHost:          get(KeyMQTTHost, "MQTT_HOST", ""),
-		MQTTPort:          port,
-		MQTTUser:          get(KeyMQTTUser, "MQTT_USER", ""),
-		MQTTPass:          get(KeyMQTTPass, "MQTT_PASSWORD", ""),
-		MQTTPrefix:        get(KeyMQTTPrefix, "MQTT_PREFIX", "homeassistant"),
-		MonitoredEntities: parseEntities(get(KeyMonitoredEntities, "", "")),
-		ThresholdW:        thr,
-		AutoWindow:        autoOn,
-		DefaultMultiplier: mult,
-		DefaultUnit:       get(KeyDefaultUnit, "", ""),
-		Capture:           capture,
-		CostPerKwh:        cost,
-		Currency:          get(KeyCurrency, "", "$"),
+		HAURL:              get(KeyHAURL, "HA_URL", ""),
+		HAToken:            get(KeyHAToken, "HA_TOKEN", ""),
+		MQTTHost:           get(KeyMQTTHost, "MQTT_HOST", ""),
+		MQTTPort:           port,
+		MQTTUser:           get(KeyMQTTUser, "MQTT_USER", ""),
+		MQTTPass:           get(KeyMQTTPass, "MQTT_PASSWORD", ""),
+		MQTTPrefix:         get(KeyMQTTPrefix, "MQTT_PREFIX", "homeassistant"),
+		MonitoredEntities:  parseEntities(get(KeyMonitoredEntities, "", "")),
+		UtilityStatisticID: strings.TrimSpace(get(KeyUtilityStatisticID, "", "")),
+		UtilityPeriod:      utilityPeriod(get(KeyUtilityPeriod, "", "auto")),
+		ThresholdW:         thr,
+		AutoWindow:         autoOn,
+		DefaultMultiplier:  mult,
+		DefaultUnit:        get(KeyDefaultUnit, "", ""),
+		Capture:            capture,
+		CostPerKwh:         cost,
+		Currency:           get(KeyCurrency, "", "$"),
+	}
+}
+
+// utilityPeriod normalizes the configured granularity to a known value.
+func utilityPeriod(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "month", "day", "hour":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return "auto"
 	}
 }
 
 // HAConfigured reports whether HA REST/WS can be used.
 func (c Config) HAConfigured() bool { return c.HAURL != "" && c.HAToken != "" }
+
+// UtilityConfigured reports whether a utility statistic is selected for backfill.
+func (c Config) UtilityConfigured() bool { return c.UtilityStatisticID != "" }
 
 // MQTTConfigured reports whether the MQTT publisher can connect.
 func (c Config) MQTTConfigured() bool { return c.MQTTHost != "" }
