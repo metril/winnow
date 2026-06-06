@@ -12,6 +12,7 @@ import Devices from "./components/Devices";
 import Agents from "./components/Agents";
 import Maintenance from "./components/Maintenance";
 import Settings from "./components/Settings";
+import Utility from "./components/Utility";
 
 export default function App() {
   const [view, setView] = useState<View>("overview");
@@ -25,6 +26,7 @@ export default function App() {
             {view === "identify" && <Identify />}
             {view === "meters" && <Meters />}
             {view === "loadtests" && <LoadTests />}
+            {view === "utility" && <Utility onNav={setView} />}
             {view === "devices" && <Devices />}
             {view === "agents" && <Agents />}
             {view === "maintenance" && <Maintenance />}

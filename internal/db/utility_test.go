@@ -230,6 +230,82 @@ func TestUtilityDailyEstimateLocalTimezone(t *testing.T) {
 	}
 }
 
+func TestUtilitySeries(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	mar := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	apr := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	may := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	jun := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	const perHour = 10.0
+	seedHourly(t, d, 8001, mar, 31*24, 5_000_000, perHour) // electric meter, all of March
+	// Publish it with a multiplier so its recorded kWh reconciles against the bill.
+	if _, err := d.pool.Exec(ctx,
+		`INSERT INTO meters (endpoint_id, publish, is_mine, pub_multiplier, pub_unit) VALUES ($1,true,true,$2,'kWh')`,
+		8001, 0.05); err != nil {
+		t.Fatal(err)
+	}
+
+	statID := "sensor.bill_consumption"
+	// Bills stored in the statistic's NATIVE unit (Wh) to exercise kWh conversion.
+	if err := d.UpsertUtilityEnergy(ctx, statID, "month",
+		[]time.Time{mar, apr, may, jun}, []float64{372000, 360000, 372000, 0}); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range map[string]string{
+		config.KeyUtilityStatisticID: statID,
+		config.KeyUtilityUnit:        "Wh",
+		config.KeyCostPerKwh:         "0.20",
+	} {
+		if err := d.SetSetting(ctx, k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, err := d.UtilitySeries(ctx)
+	if err != nil {
+		t.Fatalf("series: %v", err)
+	}
+	if res.Unit != "kWh" {
+		t.Errorf("unit = %q, want kWh", res.Unit)
+	}
+	if len(res.Points) != 4 {
+		t.Fatalf("points = %d, want 4", len(res.Points))
+	}
+	// Wh → kWh conversion: 372000 Wh = 372 kWh.
+	if math.Abs(res.Points[0].Kwh-372) > 0.01 {
+		t.Errorf("march kWh = %.3f, want 372 (Wh→kWh)", res.Points[0].Kwh)
+	}
+	if math.Abs(res.TotalKwh-1104) > 0.1 {
+		t.Errorf("total kWh = %.3f, want 1104", res.TotalKwh)
+	}
+	// cost = kWh × 0.20.
+	if res.Points[0].Cost == nil || math.Abs(*res.Points[0].Cost-74.4) > 0.01 {
+		t.Errorf("march cost = %v, want 74.40", res.Points[0].Cost)
+	}
+	// reconciliation: March's published meter recorded ≈ bill (multiplier 0.05).
+	if res.Points[0].MeterKwh == nil || math.Abs(*res.Points[0].MeterKwh-372) > 3 {
+		t.Errorf("march meter_kwh = %v, want ≈372", res.Points[0].MeterKwh)
+	}
+	if res.Points[0].CoveragePct < 0.95 {
+		t.Errorf("march coverage = %.3f, want ≈1", res.Points[0].CoveragePct)
+	}
+	// June bucket (no meter data, no closing lead) → no reconciliation.
+	if res.Points[3].MeterKwh != nil {
+		t.Errorf("june meter_kwh = %v, want nil", res.Points[3].MeterKwh)
+	}
+	found := false
+	for _, id := range res.ReconcileMeters {
+		if id == 8001 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("reconcile_meters = %v, want to include 8001", res.ReconcileMeters)
+	}
+}
+
 func TestUpsertUtilityEnergyIdempotent(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()

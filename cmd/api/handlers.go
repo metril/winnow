@@ -395,6 +395,17 @@ func (s *server) handleUtilityStatistics(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, stats)
 }
 
+// handleUtilitySeries returns the configured statistic's billed-energy series
+// (kWh + cost) with the published meter's recorded energy for reconciliation.
+func (s *server) handleUtilitySeries(w http.ResponseWriter, r *http.Request) {
+	res, err := s.d.UtilitySeries(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, res)
+}
+
 // handleUtilityCompare returns one meter's bill-vs-meter comparison (per billing
 // bucket + estimated-daily breakdown for monthly bills).
 func (s *server) handleUtilityCompare(w http.ResponseWriter, r *http.Request) {

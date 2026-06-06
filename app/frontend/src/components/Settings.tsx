@@ -18,7 +18,7 @@ export default function Settings() {
 
   const save = () => {
     const body: Record<string, string> = {};
-    ["ha_url", "ha_token", "mqtt_host", "mqtt_port", "mqtt_user", "mqtt_pass", "mqtt_prefix", "threshold_w", "auto_window", "default_multiplier", "default_unit", "cost_per_kwh", "currency", "utility_statistic_id", "utility_period"]
+    ["ha_url", "ha_token", "mqtt_host", "mqtt_port", "mqtt_user", "mqtt_pass", "mqtt_prefix", "threshold_w", "auto_window", "default_multiplier", "default_unit", "cost_per_kwh", "currency", "utility_statistic_id", "utility_period", "utility_unit"]
       .forEach((k) => { if (s[k] !== undefined && s[k] !== "") body[k] = String(s[k]); });
     return api.putSettings(body).then(load);
   };
@@ -60,7 +60,7 @@ export default function Settings() {
       <MonitoredConsumption />
 
       <UtilityBill value={field("utility_statistic_id")} period={field("utility_period") || "auto"}
-        onPick={(id) => set("utility_statistic_id", id)} onPeriod={(p) => set("utility_period", p)} />
+        onPick={(id, unit) => { set("utility_statistic_id", id); set("utility_unit", unit || "kWh"); }} onPeriod={(p) => set("utility_period", p)} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
@@ -107,7 +107,7 @@ export default function Settings() {
 }
 
 function UtilityBill({ value, period, onPick, onPeriod }: {
-  value: string; period: string; onPick: (id: string) => void; onPeriod: (p: string) => void;
+  value: string; period: string; onPick: (id: string, unit: string) => void; onPeriod: (p: string) => void;
 }) {
   const [stats, setStats] = useState<UtilityStat[] | null>(null);
   const load = () => api.utilityStatistics().then(setStats);
@@ -133,7 +133,7 @@ function UtilityBill({ value, period, onPick, onPeriod }: {
               : <div className="max-h-56 overflow-y-auto rounded-lg border border-border bg-app/40 p-2">
                 {stats.map((st) => (
                   <label key={st.id} className="flex items-center gap-2 rounded px-2 py-1 text-small hover:bg-raised">
-                    <input type="radio" name="utilstat" className="accent-brand" checked={value === st.id} onChange={() => onPick(st.id)} />
+                    <input type="radio" name="utilstat" className="accent-brand" checked={value === st.id} onChange={() => onPick(st.id, st.unit)} />
                     <span>{st.name}</span><span className="mono text-micro text-tertiary">{st.id}</span>
                     <span className="ml-auto text-micro text-tertiary">{st.unit}</span>
                   </label>

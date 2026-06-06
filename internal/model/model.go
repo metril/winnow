@@ -122,6 +122,30 @@ type UtilityCompareResult struct {
 	DailyEstimate     []UtilityDayEstimate  `json:"daily_estimate,omitempty"`
 }
 
+// UtilitySeriesPoint is one billing bucket of the user's utility bill: the billed
+// energy (kWh) and — for bill reconciliation — what winnow's published meter
+// recorded over the same period.
+type UtilitySeriesPoint struct {
+	TS          string   `json:"ts"`           // bucket start (RFC3339)
+	Kwh         float64  `json:"kwh"`          // billed energy, converted to kWh
+	MeterKwh    *float64 `json:"meter_kwh"`    // published meter recorded this bucket (nil = no overlap)
+	CoveragePct float64  `json:"coverage_pct"` // fraction of the bucket winnow captured (0..1)
+	Cost        *float64 `json:"cost"`         // billed × cost_per_kwh (nil if no tariff)
+}
+
+// UtilitySeriesResult backs the standalone "Utility bill" dashboard view.
+type UtilitySeriesResult struct {
+	StatisticID     string               `json:"statistic_id"`
+	Period          string               `json:"period"` // resolved: month|day|hour
+	Unit            string               `json:"unit"`   // always "kWh" (values are converted)
+	Currency        string               `json:"currency"`
+	CostPerKwh      float64              `json:"cost_per_kwh"`
+	TotalKwh        float64              `json:"total_kwh"`
+	BucketCount     int                  `json:"bucket_count"`
+	ReconcileMeters []int64              `json:"reconcile_meters"` // meters backing the meter_kwh line
+	Points          []UtilitySeriesPoint `json:"points"`
+}
+
 // TestWindow is a load-test span (manual or auto from the plug). KnownLoadW /
 // KnownEntityID optionally record a toggled load of known wattage for direct
 // (regression-free) calibration of the meter that saw it.
