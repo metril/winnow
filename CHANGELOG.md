@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.0](https://github.com/metril/winnow/compare/v1.5.0...v1.6.0) (2026-06-06)
+
+
+### Features
+
+* **identify:** use utility-bill (Opower) energy as an independent meter signal ([#9](https://github.com/metril/winnow/issues/9)) ([bf2235c](https://github.com/metril/winnow/commit/bf2235cb1dd823dde47ce1614aa4a4a745618bbe))
+
+
+### Bug Fixes
+
+* **compose:** give the db container enough /dev/shm for parallel VACUUM/ANALYZE ([fb1e80d](https://github.com/metril/winnow/commit/fb1e80d4b63db5be555bfad981d0523b5cc24b43))
+
 ## [1.5.0](https://github.com/metril/winnow/compare/v1.4.0...v1.5.0) (2026-06-05)
 
 
