@@ -52,6 +52,23 @@ func (c *Client) Test(ctx context.Context) error {
 	return err
 }
 
+// TimeZone returns Home Assistant's configured IANA timezone (e.g.
+// "America/New_York") from GET /api/config, so calendar-period analysis (daily
+// utility-bill breakdowns) can align to the user's local day, not UTC.
+func (c *Client) TimeZone(ctx context.Context) (string, error) {
+	body, err := c.get(ctx, "/api/config")
+	if err != nil {
+		return "", err
+	}
+	var cfg struct {
+		TimeZone string `json:"time_zone"`
+	}
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		return "", err
+	}
+	return cfg.TimeZone, nil
+}
+
 // Sample is one plug power reading.
 type Sample struct {
 	TS    time.Time

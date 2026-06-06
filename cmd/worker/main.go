@@ -325,6 +325,12 @@ func (w *worker) backfillUtility(ctx context.Context, cfg config.Config) error {
 	start := end.AddDate(0, 0, -397)
 	statID := cfg.UtilityStatisticID
 
+	// Cache HA's timezone so daily utility breakdowns align to the user's local
+	// calendar day rather than UTC (cheap; HA buckets statistics in its own tz).
+	if tz, terr := ha.New(cfg.HAURL, cfg.HAToken).TimeZone(fctx); terr == nil && tz != "" {
+		_ = w.d.SetSetting(ctx, config.KeyHATimeZone, tz)
+	}
+
 	var period string
 	var points []ha.StatPoint
 	var err error

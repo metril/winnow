@@ -175,6 +175,61 @@ func TestUtilityCompare(t *testing.T) {
 	}
 }
 
+func TestUtilityDailyEstimateLocalTimezone(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("tzdata unavailable")
+	}
+	// Bills start at LOCAL midnight (as Opower stores them) — Mar is EST, Apr/May EDT.
+	mar := time.Date(2026, 3, 1, 0, 0, 0, 0, loc)
+	apr := time.Date(2026, 4, 1, 0, 0, 0, 0, loc)
+	may := time.Date(2026, 5, 1, 0, 0, 0, 0, loc)
+	jun := time.Date(2026, 6, 1, 0, 0, 0, 0, loc)
+
+	const perHour = 10.0
+	seedHourly(t, d, 7001, mar, 31*24, 3_000_000, perHour) // all of local March (spans DST 3/8)
+
+	statID := "sensor.local_consumption"
+	if err := d.UpsertUtilityEnergy(ctx, statID, "month",
+		[]time.Time{mar, apr, may, jun}, []float64{372, 360, 372, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetSetting(ctx, config.KeyUtilityStatisticID, statID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetSetting(ctx, config.KeyHATimeZone, "America/New_York"); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := d.UtilityCompare(ctx, 7001)
+	if err != nil {
+		t.Fatalf("compare: %v", err)
+	}
+	// March must be exactly 31 local days starting on the 1st (DST-safe) and every
+	// March day must carry metered energy.
+	var marchDays []string
+	meterDays := 0
+	for _, de := range res.DailyEstimate {
+		if len(de.Day) >= 7 && de.Day[:7] == "2026-03" {
+			marchDays = append(marchDays, de.Day)
+			if de.MeterKwh != nil {
+				meterDays++
+			}
+		}
+	}
+	if len(marchDays) != 31 {
+		t.Errorf("March local days = %d, want 31: %v", len(marchDays), marchDays)
+	}
+	if len(marchDays) > 0 && marchDays[0] != "2026-03-01" {
+		t.Errorf("first March day = %q, want 2026-03-01", marchDays[0])
+	}
+	if meterDays < 30 {
+		t.Errorf("March days with meter energy = %d, want ~31 (local-day aligned)", meterDays)
+	}
+}
+
 func TestUpsertUtilityEnergyIdempotent(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()
