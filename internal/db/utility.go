@@ -401,6 +401,13 @@ func (d *DB) UtilitySeries(ctx context.Context) (*model.UtilitySeriesResult, err
 		recon = nil // reconciliation is a bonus; the bill still renders without it
 	}
 
+	// For a coarse (monthly) bill, spread each bill across its days so the user can
+	// eyeball an estimated daily-usage curve on the dashboard — a weak but useful
+	// identification data point. Overlay what the published meter(s) recorded per day.
+	if period == "month" {
+		res.DailyEstimate = d.utilityDailyEstimateSeries(ctx, cfg.UtilityStatisticID, cfg.MonitoredEntities, cfg.HATimeZone, factor, meters)
+	}
+
 	rows, err := d.pool.Query(ctx,
 		`SELECT ts, kwh FROM utility_energy WHERE statistic_id=$1 AND period=$2 ORDER BY ts`,
 		cfg.UtilityStatisticID, period)
@@ -524,6 +531,164 @@ ORDER BY d.day`, statID, meterID, tz)
 			}
 		}
 		out = append(out, de)
+	}
+	return out
+}
+
+// utilityDailyEstimateSeries is the whole-home (meter-agnostic) sibling of
+// utilityDailyEstimate, backing the standalone Utility-bill page. It spreads each
+// monthly bill across its local-calendar days — a flat level (bill ÷ days) always,
+// and a profile-shaped curve (bill × monitored_day ÷ monitored_month) when monitored
+// sensors exist — and overlays MeterKwh: the energy the user's published/is-mine
+// electric meter(s) recorded that day (Σ delta × pub_multiplier). Bill-derived values
+// are converted to kWh via `factor` (the statistic's native unit); the meter overlay
+// is already kWh. `meters` is the reconciliation meter set (resolved once by the
+// caller). Returns empty when no monthly buckets exist.
+func (d *DB) utilityDailyEstimateSeries(ctx context.Context, statID string, entities []string, tz string, factor float64, meters []int64) []model.UtilityDayEstimate {
+	out := []model.UtilityDayEstimate{}
+	loc, err := time.LoadLocation(tz)
+	if err != nil || tz == "" {
+		loc, tz = time.UTC, "UTC"
+	}
+	// Per local day: the bill's monthly total (native unit), the flat level, and the
+	// published meters' summed recorded energy (already kWh via pub_multiplier).
+	rows, err := d.pool.Query(ctx, `
+WITH ub AS (
+  SELECT ts AS bstart, lead(ts) OVER (ORDER BY ts) AS bend, kwh
+  FROM utility_energy WHERE statistic_id=$1 AND period='month'),
+days AS (
+  SELECT b.kwh,
+         generate_series((b.bstart AT TIME ZONE $2)::date,
+                         (b.bend   AT TIME ZONE $2)::date - 1,
+                         interval '1 day')::date AS day,
+         ((b.bend AT TIME ZONE $2)::date - (b.bstart AT TIME ZONE $2)::date) AS ndays
+  FROM ub b WHERE b.bend IS NOT NULL),
+pm AS (
+  SELECT mi.endpoint_id,
+         coalesce(m.pub_multiplier,1) AS mult,
+         CASE WHEN mi.msg_type='SCM' THEN 16777216.0 ELSE 4294967296.0 END AS modulus
+  FROM meter_index mi JOIN meters m ON m.endpoint_id = mi.endpoint_id
+  WHERE mi.endpoint_id = ANY($3)),
+mday AS (
+  SELECT r.endpoint_id, (r.bucket AT TIME ZONE $2)::date AS day,
+         max(r.max_c) AS cmax, pm.modulus, pm.mult
+  FROM readings_1m r JOIN pm ON pm.endpoint_id = r.endpoint_id
+  GROUP BY r.endpoint_id, day, pm.modulus, pm.mult),
+mstep AS (
+  SELECT endpoint_id, day, modulus, mult,
+         cmax - lag(cmax) OVER (PARTITION BY endpoint_id ORDER BY day) AS raw
+  FROM mday),
+mdelta AS (
+  SELECT endpoint_id, day, mult, `+rolloverDeltaSQL("raw", "modulus")+` AS delta
+  FROM mstep),
+msum AS (SELECT day, sum(delta*mult) AS meter_kwh FROM mdelta GROUP BY day)
+SELECT d.day, d.kwh, d.kwh / nullif(d.ndays,0) AS flat, ms.meter_kwh
+FROM days d
+LEFT JOIN msum ms ON ms.day = d.day
+ORDER BY d.day`, statID, tz, meters)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	type row struct {
+		day      time.Time
+		monthKwh float64 // native unit
+		flat     float64 // native unit
+		meterKwh *float64
+	}
+	var drows []row
+	for rows.Next() {
+		var r row
+		var flat *float64
+		if err := rows.Scan(&r.day, &r.monthKwh, &flat, &r.meterKwh); err != nil {
+			return out
+		}
+		r.flat = deref(flat)
+		drows = append(drows, r)
+	}
+	if rows.Err() != nil || len(drows) == 0 {
+		return out
+	}
+
+	// Monitored per-local-day energy (kWh), fetched once over the day span, for the
+	// profile-shaped estimate. Bounded to the reference span to avoid gapfilling an
+	// empty multi-year range.
+	var dayMon, monthMon map[string]float64
+	if len(entities) > 0 {
+		y0, m0, d0 := drows[0].day.Date()
+		y1, m1, d1 := drows[len(drows)-1].day.Date()
+		lo := time.Date(y0, m0, d0, 0, 0, 0, 0, loc)
+		hi := time.Date(y1, m1, d1, 0, 0, 0, 0, loc).AddDate(0, 0, 1)
+		dayMon = d.monitoredDailyKwh(ctx, entities, tz, lo, hi)
+		monthMon = map[string]float64{}
+		for day, k := range dayMon {
+			monthMon[day[:7]] += k // sum per calendar month (yyyy-mm)
+		}
+	}
+
+	for _, r := range drows {
+		dayStr := r.day.Format("2006-01-02")
+		de := model.UtilityDayEstimate{Day: dayStr, FlatKwh: round(r.flat*factor, 3)}
+		if r.meterKwh != nil {
+			mk := round(*r.meterKwh, 3) // already kWh
+			de.MeterKwh = &mk
+		}
+		if dayMon != nil && r.monthKwh > 0 {
+			if monE := monthMon[dayStr[:7]]; monE > 0 {
+				shaped := round(r.monthKwh*factor*(dayMon[dayStr]/monE), 3)
+				de.ShapedKwh = &shaped
+			}
+		}
+		out = append(out, de)
+	}
+	return out
+}
+
+// monitoredDailyKwh returns the monitored consumption per local-calendar day (kWh)
+// over [lo,hi), in ONE query — the daily counterpart to MonitoredEnergy. The range
+// is clamped to the actual reference-sample span so time_bucket_gapfill never fills
+// an empty multi-year window. Keyed by local date "2006-01-02".
+func (d *DB) monitoredDailyKwh(ctx context.Context, entities []string, tz string, lo, hi time.Time) map[string]float64 {
+	out := map[string]float64{}
+	if len(entities) == 0 {
+		return out
+	}
+	var rlo, rhi *time.Time
+	_ = d.pool.QueryRow(ctx,
+		`SELECT min(ts), max(ts) FROM reference_samples WHERE entity_id = ANY($1)`, entities).Scan(&rlo, &rhi)
+	if rlo == nil || rhi == nil {
+		return out
+	}
+	start, end := lo, hi
+	if rlo.After(start) {
+		start = *rlo
+	}
+	if rhi.Before(end) {
+		end = *rhi
+	}
+	if !start.Before(end) {
+		return out
+	}
+	rows, err := d.pool.Query(ctx, `
+WITH per_entity AS (
+  SELECT time_bucket_gapfill('1 minute', ts) AS mt, entity_id, locf(avg(power_w)) AS w
+  FROM reference_samples
+  WHERE entity_id = ANY($1) AND ts >= $2 AND ts <= $3
+  GROUP BY mt, entity_id),
+per_min AS (SELECT mt, sum(coalesce(w,0)) AS w FROM per_entity GROUP BY mt)
+SELECT (mt AT TIME ZONE $4)::date AS day, sum(w)/60.0/1000.0 AS kwh
+FROM per_min GROUP BY day ORDER BY day`, entities, start, end, tz)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var day time.Time
+		var kwh *float64
+		if err := rows.Scan(&day, &kwh); err != nil {
+			return out
+		}
+		out[day.Format("2006-01-02")] = deref(kwh)
 	}
 	return out
 }

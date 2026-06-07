@@ -85,6 +85,7 @@ export interface UtilitySeries {
   statistic_id: string; period: string; unit: string; currency: string;
   cost_per_kwh: number; total_kwh: number; bucket_count: number;
   reconcile_meters: number[]; points: UtilitySeriesPoint[];
+  daily_estimate?: UtilityDayEstimate[];
 }
 
 export interface ScanSettings { freq: string; gain: string; ppm: string; msgtype: string; filterid: string; }

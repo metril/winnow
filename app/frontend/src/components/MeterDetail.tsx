@@ -190,9 +190,9 @@ function UtilityTab({ id, onCalibrated }: { id: number; onCalibrated: () => void
               <YAxis tickFormatter={(v) => fmt(v)} {...ch.axisY} />
               <Tooltip formatter={(v: any, n: any) => [fmt(v), n]} contentStyle={ch.tooltipStyle} />
               <Legend />
-              <Line name="flat est." dataKey="flat" stroke={ch.gold} strokeDasharray="4 3" dot={false} strokeWidth={1.5} isAnimationActive={false} />
-              <Line name="shaped est." dataKey="shaped" stroke={ch.palette[2]} dot={false} strokeWidth={1.5} isAnimationActive={false} connectNulls />
-              <Line name="this meter" dataKey="meter" stroke={ch.brand} dot={false} strokeWidth={2} isAnimationActive={false} connectNulls />
+              <Line name="flat est." dataKey="flat" stroke={ch.gold} strokeDasharray="4 3" dot={{ r: 2 }} activeDot={{ r: 4 }} strokeWidth={1.5} isAnimationActive={false} />
+              <Line name="shaped est." dataKey="shaped" stroke={ch.palette[2]} dot={{ r: 2 }} activeDot={{ r: 4 }} strokeWidth={1.5} isAnimationActive={false} connectNulls />
+              <Line name="this meter" dataKey="meter" stroke={ch.brand} dot={{ r: 2 }} activeDot={{ r: 4 }} strokeWidth={2} isAnimationActive={false} connectNulls />
             </LineChart>
           </ResponsiveContainer>
         </div>

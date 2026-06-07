@@ -314,15 +314,17 @@ func (w *worker) utilityLoop(ctx context.Context) {
 	}
 }
 
-// backfillUtility fetches a trailing window of the configured statistic at the
-// configured (or auto-probed) period, normalizes monotonic sums to per-bucket
-// kWh, and idempotently upserts. ~13 months of trailing data gives enough billing
-// buckets for cross-bucket multiplier stability.
+// backfillUtility fetches the configured statistic's full available history at the
+// configured (or auto-probed) period, normalizes monotonic sums to per-bucket kWh,
+// and idempotently upserts. The window starts far enough back that HA returns
+// everything the utility exposes (Opower keeps ~3 yr); real depth is bounded by the
+// utility's own retention, giving the user the full series to browse and plenty of
+// billing buckets for cross-bucket multiplier stability.
 func (w *worker) backfillUtility(ctx context.Context, cfg config.Config) error {
-	fctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	fctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	end := time.Now().UTC()
-	start := end.AddDate(0, 0, -397)
+	start := end.AddDate(-10, 0, 0) // max available — HA returns only what the utility retains
 	statID := cfg.UtilityStatisticID
 
 	// Cache HA's timezone so daily utility breakdowns align to the user's local
