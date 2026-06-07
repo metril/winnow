@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/metril/winnow/compare/v1.7.0...v1.8.0) (2026-06-07)
+
+
+### Features
+
+* **utility:** full history, browsable charts, dashboard daily estimate ([#13](https://github.com/metril/winnow/issues/13)) ([dc5d0c7](https://github.com/metril/winnow/commit/dc5d0c74beb96e4c6d562c3fab5e606d446a35bf))
+
 ## [1.7.0](https://github.com/metril/winnow/compare/v1.6.0...v1.7.0) (2026-06-06)
 
 
