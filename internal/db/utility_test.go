@@ -304,6 +304,115 @@ func TestUtilitySeries(t *testing.T) {
 	if !found {
 		t.Errorf("reconcile_meters = %v, want to include 8001", res.ReconcileMeters)
 	}
+
+	// Daily estimate (whole-home) present for a monthly bill: flat = bill ÷ days in
+	// kWh (372 kWh ÷ 31 ≈ 12), with the published meter's recorded energy overlaid on
+	// March days (perHour 10 × 24 × mult 0.05 = 12 kWh/day). No monitored sensors → no
+	// shaped curve.
+	if len(res.DailyEstimate) == 0 {
+		t.Fatal("no daily estimate for monthly series")
+	}
+	marchMeterDays := 0
+	for _, de := range res.DailyEstimate {
+		if de.ShapedKwh != nil {
+			t.Errorf("day %s shaped should be nil without monitored sensors", de.Day)
+		}
+		if de.Day[:7] == "2026-03" {
+			// flat is pure arithmetic (bill ÷ days, Wh→kWh): exactly 372/31 = 12.
+			if math.Abs(de.FlatKwh-12) > 0.01 {
+				t.Errorf("march day %s flat = %.3f, want ≈12 kWh (Wh→kWh)", de.Day, de.FlatKwh)
+			}
+			// meter overlay magnitude ≈12 kWh/day (240 counts × 0.05); allow boundary
+			// days to read lower, as the existing daily tests do.
+			if de.MeterKwh != nil {
+				if *de.MeterKwh < 8 || *de.MeterKwh > 13 {
+					t.Errorf("march day %s meter = %.3f, want ≈12 kWh", de.Day, *de.MeterKwh)
+				}
+				marchMeterDays++
+			}
+		}
+	}
+	if marchMeterDays < 30 {
+		t.Errorf("march days with meter overlay = %d, want ~31", marchMeterDays)
+	}
+}
+
+// TestUtilitySeriesNoDailyForHourly verifies the daily estimate is only produced for
+// coarse (monthly) bills — finer periods are used directly with no day-spread.
+func TestUtilitySeriesNoDailyForHourly(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	h0 := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	statID := "sensor.hourly_consumption"
+	ts := []time.Time{h0, h0.Add(time.Hour), h0.Add(2 * time.Hour)}
+	if err := d.UpsertUtilityEnergy(ctx, statID, "hour", ts, []float64{1.0, 1.2, 0.9}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetSetting(ctx, config.KeyUtilityStatisticID, statID); err != nil {
+		t.Fatal(err)
+	}
+	res, err := d.UtilitySeries(ctx)
+	if err != nil {
+		t.Fatalf("series: %v", err)
+	}
+	if res.Period != "hour" {
+		t.Errorf("period = %q, want hour", res.Period)
+	}
+	if len(res.DailyEstimate) != 0 {
+		t.Errorf("daily estimate = %d entries, want 0 for hourly period", len(res.DailyEstimate))
+	}
+}
+
+// TestUtilitySeriesShapedFromMonitored exercises the monitored profile-shaped daily
+// estimate path (monitoredDailyKwh): with a monitored sensor present, each day gets a
+// shaped value and the shaped curve over a fully-covered month sums to the bill.
+func TestUtilitySeriesShapedFromMonitored(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	mar := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	apr := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+
+	// Monitored sensor: one hourly power sample across all of March (constant 1000 W).
+	for h := 0; h < 31*24; h++ {
+		if err := d.InsertReferenceSample(ctx, "sensor.mon", mar.Add(time.Duration(h)*time.Hour), 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const bill = 310.0 // kWh for March
+	statID := "sensor.shaped_consumption"
+	if err := d.UpsertUtilityEnergy(ctx, statID, "month", []time.Time{mar, apr}, []float64{bill, 0}); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range map[string]string{
+		config.KeyUtilityStatisticID: statID,
+		config.KeyUtilityUnit:        "kWh",
+		config.KeyMonitoredEntities:  `["sensor.mon"]`,
+	} {
+		if err := d.SetSetting(ctx, k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, err := d.UtilitySeries(ctx)
+	if err != nil {
+		t.Fatalf("series: %v", err)
+	}
+	var shapedSum float64
+	shapedDays := 0
+	for _, de := range res.DailyEstimate {
+		if de.Day[:7] != "2026-03" || de.ShapedKwh == nil {
+			continue
+		}
+		shapedSum += *de.ShapedKwh
+		shapedDays++
+	}
+	if shapedDays < 30 {
+		t.Errorf("March days with shaped estimate = %d, want ~31", shapedDays)
+	}
+	// Σ shaped over a fully-monitored month equals the bill (bill × Σday/month).
+	if math.Abs(shapedSum-bill) > 5 {
+		t.Errorf("shaped sum over March = %.2f, want ≈%.0f (= bill)", shapedSum, bill)
+	}
 }
 
 func TestUpsertUtilityEnergyIdempotent(t *testing.T) {

@@ -144,6 +144,10 @@ type UtilitySeriesResult struct {
 	BucketCount     int                  `json:"bucket_count"`
 	ReconcileMeters []int64              `json:"reconcile_meters"` // meters backing the meter_kwh line
 	Points          []UtilitySeriesPoint `json:"points"`
+	// DailyEstimate spreads a coarse (monthly) bill across its days — a flat level
+	// and, when monitored sensors exist, a profile-shaped curve — alongside the
+	// published meter's recorded energy per day. Empty for non-monthly periods.
+	DailyEstimate []UtilityDayEstimate `json:"daily_estimate,omitempty"`
 }
 
 // TestWindow is a load-test span (manual or auto from the plug). KnownLoadW /
