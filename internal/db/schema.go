@@ -73,6 +73,10 @@ CREATE TABLE IF NOT EXISTS test_windows (
 -- known energy is directly calibrated and strongly confirmed.
 ALTER TABLE test_windows ADD COLUMN IF NOT EXISTS known_load_w DOUBLE PRECISION;
 ALTER TABLE test_windows ADD COLUMN IF NOT EXISTS known_entity_id TEXT;
+-- snoop_k (added with the daily physics screen): the screened candidate-pool size
+-- frozen when the window closes, so the data-snooping correction for this window
+-- stays stable as more meters are overheard later.
+ALTER TABLE test_windows ADD COLUMN IF NOT EXISTS snoop_k INTEGER;
 
 CREATE TABLE IF NOT EXISTS capture_heartbeat (
     source      TEXT PRIMARY KEY,

@@ -37,24 +37,41 @@ func (d *DB) Leaderboard(ctx context.Context, o LeaderboardOpts) ([]model.Meter,
 		add("w.bucket <= ", *o.Until)
 	}
 
+	// total_movement is the sum of rollover-aware, glitch-filtered hourly deltas —
+	// not max−min, which a single bit-flipped decode (e.g. a +2^17 counter jump)
+	// inflates by orders of magnitude.
 	q := `
 WITH win AS (
   SELECT endpoint_id,
-         sum(n)                AS packets,
-         min(bucket)           AS first_seen,
-         max(bucket)           AS last_seen,
-         max(max_c)-min(min_c) AS total_movement
+         sum(n)      AS packets,
+         min(bucket) AS first_seen,
+         max(bucket) AS last_seen
   FROM readings_1m w
   ` + where + `
-  GROUP BY endpoint_id)
+  GROUP BY endpoint_id),
+hb AS (
+  SELECT w.endpoint_id, time_bucket('1 hour', w.bucket) AS hb, max(w.max_c) AS cmax,
+         CASE WHEN mi.msg_type = 'SCM' THEN 16777216.0 ELSE 4294967296.0 END AS modulus
+  FROM readings_1m w JOIN meter_index mi USING (endpoint_id)
+  ` + where + `
+  GROUP BY w.endpoint_id, hb, modulus),
+stepped AS (
+  SELECT endpoint_id, hb, modulus,
+         cmax - lag(cmax) OVER (PARTITION BY endpoint_id ORDER BY hb) AS raw
+  FROM hb),
+m AS (
+  SELECT endpoint_id, hb, ` + rolloverDeltaSQL("raw", "modulus") + ` AS delta
+  FROM stepped),` + glitchCleanCTEs("m", "hb") + `,
+mv AS (SELECT endpoint_id, sum(delta) AS total_movement FROM glitch_clean GROUP BY endpoint_id)
 SELECT win.endpoint_id, i.msg_type, i.endpoint_type,
        win.packets,
        COALESCE((SELECT count(*) FROM meter_source ms WHERE ms.endpoint_id = win.endpoint_id), 0) AS sources,
-       win.first_seen, win.last_seen, win.total_movement, i.last_consumption,
+       win.first_seen, win.last_seen, mv.total_movement, i.last_consumption,
        m.label, m.notes, m.is_candidate, m.is_mine, m.ignored, m.publish,
        m.pub_name, m.pub_multiplier, m.pub_unit
 FROM win
 JOIN meter_index i ON i.endpoint_id = win.endpoint_id
+LEFT JOIN mv ON mv.endpoint_id = win.endpoint_id
 LEFT JOIN meters m ON m.endpoint_id = win.endpoint_id`
 	if o.MsgType != "" {
 		args = append(args, o.MsgType)

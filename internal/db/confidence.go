@@ -22,6 +22,15 @@ type confidenceSignals struct {
 	ChangePoint   *float64 // 0..1 coherence of the rate step at a known toggle
 	LagPenalty    *float64 // 0..1 multiplier from lag plausibility (1 = ideal)
 	AnchorAgree   *float64 // 0..1 agreement with a known-load anchor
+	// Physics is the daily-reconciliation screen score (0..1; nil = not screened).
+	// PhysicsViolation marks a meter that read BELOW the monitored subset on a
+	// full day — physically impossible for the user's meter.
+	Physics          *float64
+	PhysicsViolation bool
+	// RefCV is the coefficient of variation of the monitored power over the
+	// window. A near-constant reference (CV → 0) carries no correlation signal,
+	// so the correlation weight is shifted onto energy reconciliation.
+	RefCV *float64
 }
 
 // component weights (sum of the always-present ones ≈ 1 before optional blends).
@@ -92,7 +101,18 @@ func combineConfidence(s confidenceSignals) (float64, map[string]float64) {
 	}
 	parts["change_point"] = change
 
-	base := wCorr*corr + wR2*r2 + wRecon*recon + wPkt*pkt + wFloor*floor + wChange*change
+	// Flat-reference reweight: with a near-constant monitored signal the Pearson r
+	// is quantization/noise, not evidence — shift the correlation weight onto the
+	// energy-reconciliation gate, which still works on magnitudes.
+	wc, wr := wCorr, wRecon
+	if s.RefCV != nil && *s.RefCV < 0.25 {
+		f := clamp01(*s.RefCV / 0.25)
+		wc = wCorr * f
+		wr = wRecon + (wCorr - wc)
+		parts["ref_cv"] = round(*s.RefCV, 3)
+	}
+
+	base := wc*corr + wR2*r2 + wr*recon + wPkt*pkt + wFloor*floor + wChange*change
 
 	// A known-load anchor is the strongest evidence — blend it in heavily.
 	if s.AnchorAgree != nil {
@@ -112,6 +132,20 @@ func combineConfidence(s confidenceSignals) (float64, map[string]float64) {
 	parts["snoop"] = snoop
 
 	conf := clamp01(base * lag * snoop)
+
+	// Daily physics screen: an independent, day-level energy containment check.
+	// It is immune to the correlation's multiple-comparison problem, so it blends
+	// in AFTER the lag/snoop gates rather than being annihilated by them; a
+	// violation (meter < monitored on a full day) gates hard the other way.
+	if s.Physics != nil {
+		p := clamp01(*s.Physics)
+		parts["physics"] = p
+		conf = clamp01(0.5*conf + 0.5*p)
+	}
+	if s.PhysicsViolation {
+		parts["physics"] = 0
+		conf *= 0.2
+	}
 	parts["confidence"] = round(conf, 3)
 	return conf, parts
 }

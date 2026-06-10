@@ -133,6 +133,26 @@ export interface AgentsResp {
   server_key: string; server_fingerprint: string; tls_fingerprint: string;
   authorized: AuthorizedAgent[]; remotes: RemoteDongle[]; pending: PendingAgent[];
 }
+export interface DailyDay { day: string; kwh: number | null; resid?: number | null; }
+export interface DailyMeterRow {
+  endpoint_id: number; msg_type: string; endpoint_type: number | null;
+  label?: string | null; unit: number | null; kwh_per_day: number | null;
+  resid_mean: number | null; resid_sd: number | null;
+  pass: boolean; score: number; reason?: string;
+  days: DailyDay[]; packets: number; sources: number;
+}
+export interface DailyScreen {
+  days: string[]; monitored_kwh: number[]; monitored_avg: number;
+  bill_lo: number | null; bill_hi: number | null;
+  band_lo: number; band_hi: number;
+  min_days: number; survivors: number; rows: DailyMeterRow[];
+}
+export interface IdentifyDaily {
+  screen: DailyScreen;
+  flat_estimate: (number | null)[];
+  shaped_estimate: (number | null)[];
+}
+
 export interface ProfilePoint { key: number; value: number; }
 export interface HeatCell { dow: number; hour: number; value: number; }
 export interface DailyPoint { day: string; value: number; }
@@ -195,6 +215,8 @@ export const api = {
 
   identify: (hours: number, bucket = "auto", commodity = "electric") =>
     j<any>(`/api/identify?hours=${hours}&bucket=${bucket}&commodity=${commodity}`),
+  identifyDaily: (ids: number[] = []) =>
+    j<IdentifyDaily>(`/api/identify/daily${ids.length ? `?ids=${ids.join(",")}` : ""}`),
   identifyAuto: () => j<any>("/api/identify/auto"),
   referenceSeries: (startISO: string, endISO: string) =>
     j<{ bucket: string; value: number }[]>(`/api/reference/series?start=${startISO}&end=${endISO}`),

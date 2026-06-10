@@ -548,7 +548,15 @@ func (s *server) handleIdentify(w http.ResponseWriter, r *http.Request) {
 	if c := r.URL.Query().Get("commodity"); c == "all" {
 		commodity = "all"
 	}
-	ranking, floor, err := s.d.CorrelationVsReference(r.Context(), cfg.MonitoredEntities, start, end, bucketMin, commodity == "electric")
+	// Daily physics screen first (window-independent): its survivors define the
+	// data-snooping pool and its verdicts gate/boost per-meter confidence.
+	var aux *db.IdentifyAux
+	var survivors int
+	if screen, serr := s.d.DailyReconciliation(r.Context(), cfg.MonitoredEntities, cfg.HATimeZone, nil); serr == nil {
+		aux = db.AuxFromScreen(screen)
+		survivors = screen.Survivors
+	}
+	ranking, floor, err := s.d.CorrelationVsReferenceAux(r.Context(), cfg.MonitoredEntities, start, end, bucketMin, commodity == "electric", aux)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -558,9 +566,56 @@ func (s *server) handleIdentify(w http.ResponseWriter, r *http.Request) {
 		"monitored_entities":   cfg.MonitoredEntities,
 		"monitored_floor_w":    floor,
 		"monitored_energy_kwh": s.d.MonitoredEnergy(r.Context(), cfg.MonitoredEntities, start, end),
+		"monitored_cv":         s.d.MonitoredCV(r.Context(), cfg.MonitoredEntities, start, end),
 		"bucket_min":           bucketMin,
 		"commodity":            commodity,
+		"physics_survivors":    survivors,
 		"ranking":              ranking,
+	})
+}
+
+// handleIdentifyDaily returns the daily-reconciliation physics screen: per-local-
+// day energy of every plausible meter vs the monitored reference and the bill
+// band. ?ids=1,2 adds those meters to the rows (with their failure reason) so the
+// UI can chart any meter against the monitored/estimate lines.
+func (s *server) handleIdentifyDaily(w http.ResponseWriter, r *http.Request) {
+	cfg, _ := s.d.LoadConfig(r.Context())
+	var ids []int64
+	for _, p := range strings.Split(r.URL.Query().Get("ids"), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			if n, err := strconv.ParseInt(p, 10, 64); err == nil {
+				ids = append(ids, n)
+			}
+		}
+	}
+	screen, err := s.d.DailyReconciliation(r.Context(), cfg.MonitoredEntities, cfg.HATimeZone, ids)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	// Bill-derived daily estimate (flat + shaped), aligned to the screen's days,
+	// so the chart can draw the estimate lines next to monitored + meters.
+	flat := map[string]float64{}
+	shaped := map[string]*float64{}
+	if cfg.UtilityConfigured() && len(screen.Days) > 0 {
+		for _, e := range s.d.UtilityDailyEstimateRange(r.Context(), screen.Days[0], screen.Days[len(screen.Days)-1]) {
+			flat[e.Day] = e.FlatKwh
+			shaped[e.Day] = e.ShapedKwh
+		}
+	}
+	flatArr := make([]*float64, len(screen.Days))
+	shapedArr := make([]*float64, len(screen.Days))
+	for i, day := range screen.Days {
+		if v, ok := flat[day]; ok {
+			vv := v
+			flatArr[i] = &vv
+		}
+		shapedArr[i] = shaped[day]
+	}
+	writeJSON(w, map[string]any{
+		"screen":         screen,
+		"flat_estimate":  flatArr,
+		"shaped_estimate": shapedArr,
 	})
 }
 
@@ -919,6 +974,13 @@ func (s *server) handleStopTest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
+	}
+	// Freeze the data-snooping candidate pool for this window at close time so
+	// re-analyses don't drift as more meters are overheard later. Best-effort.
+	if cfg, cerr := s.d.LoadConfig(r.Context()); cerr == nil {
+		if screen, serr := s.d.DailyReconciliation(r.Context(), cfg.MonitoredEntities, cfg.HATimeZone, nil); serr == nil && screen.Survivors > 0 {
+			_ = s.d.SetTestSnoopK(r.Context(), id, screen.Survivors)
+		}
 	}
 	writeJSON(w, t)
 }

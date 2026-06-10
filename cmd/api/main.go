@@ -137,6 +137,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agents/revoke", s.handleRevokeAgent)
 
 	mux.HandleFunc("GET /api/identify", s.handleIdentify)
+	mux.HandleFunc("GET /api/identify/daily", s.handleIdentifyDaily)
 	mux.HandleFunc("GET /api/identify/auto", s.handleIdentifyAuto)
 	mux.HandleFunc("GET /api/reference/series", s.handleReferenceSeries)
 

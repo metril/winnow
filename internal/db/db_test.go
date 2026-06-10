@@ -9,7 +9,11 @@ import (
 	"winnow/internal/model"
 )
 
-var base = time.Date(2026, 5, 30, 0, 0, 0, 0, time.UTC)
+// base anchors all seeded fixtures ~6 days in the past so now()-relative
+// queries (profiles, leaderboard defaults) still see them. A fixed calendar
+// date here rots: the analytics test fails as soon as the wall clock moves
+// 7 days past it.
+var base = time.Now().UTC().AddDate(0, 0, -6).Truncate(time.Hour)
 
 func testDB(t *testing.T) *DB {
 	dsn := os.Getenv("TEST_DATABASE_URL")

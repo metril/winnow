@@ -61,6 +61,26 @@ func rolloverDeltaSQL(raw, modCol string) string {
 		"ELSE NULL END)"
 }
 
+// glitchCleanCTEs returns two chained CTEs that strip decode-glitch spikes from a
+// deltas CTE shaped (endpoint_id, <bcol>, delta): rtlamr occasionally decodes a
+// bit-flipped counter (jumps like +2^17 / +2^21) that survives the CRC, and one
+// such spike dwarfs days of real consumption — polluting correlation, movement
+// and any energy sum built on the deltas. A positive delta more than 50× the
+// meter's own median positive delta (with an absolute floor of 1000 counts, so
+// coarse 1-unit/bucket meters aren't clipped) is discarded as corruption, not
+// consumption. Emits `med` and `glitch_clean`; callers read from glitch_clean.
+func glitchCleanCTEs(src, bcol string) string {
+	return `
+med AS (
+  SELECT endpoint_id, percentile_cont(0.5) WITHIN GROUP (ORDER BY delta) AS m
+  FROM ` + src + ` WHERE delta > 0 GROUP BY endpoint_id),
+glitch_clean AS (
+  SELECT s.endpoint_id, s.` + bcol + `, s.delta
+  FROM ` + src + ` s LEFT JOIN med USING (endpoint_id)
+  WHERE s.delta IS NOT NULL
+    AND s.delta <= greatest(coalesce(med.m, 0) * 50, 1000))`
+}
+
 // demingSlope returns the total-least-squares (orthogonal, equal error-variance)
 // slope of y on x from the regression sums sxx, syy, sxy. Unlike OLS, it does not
 // attenuate when x (the monitored reference) is itself noisy. Falls back to the OLS

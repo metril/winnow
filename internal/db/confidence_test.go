@@ -110,6 +110,76 @@ func TestSnoopFactorPenalizesManyCandidates(t *testing.T) {
 	}
 }
 
+func TestCombineConfidencePhysics(t *testing.T) {
+	weak := 0.15
+	base := confidenceSignals{
+		R: &weak, HasMultiplier: true, MeterKwh: 35, MonitoredKwh: 30,
+		WindowPackets: 500, NBuckets: 100, NCandidates: 4,
+	}
+	plain, _ := combineConfidence(base)
+
+	pass := base
+	score := 0.9
+	pass.Physics = &score
+	pc, parts := combineConfidence(pass)
+	if !(pc > plain) {
+		t.Fatalf("a physics pass should lift a weak-correlation candidate: %v vs %v", pc, plain)
+	}
+	if parts["physics"] != 0.9 {
+		t.Fatalf("physics part missing from breakdown: %v", parts)
+	}
+	// the blend lands after lag/snoop, so even a snoop-crushed candidate keeps
+	// roughly half its physics evidence.
+	if pc < 0.4 {
+		t.Fatalf("physics-passing candidate should keep substantial confidence, got %v", pc)
+	}
+
+	viol := base
+	viol.PhysicsViolation = true
+	vc, vparts := combineConfidence(viol)
+	if !(vc < 0.2*plain+1e-9) {
+		t.Fatalf("a physics violation must gate hard: %v vs plain %v", vc, plain)
+	}
+	if vparts["physics"] != 0 {
+		t.Fatalf("violation should zero the physics part: %v", vparts)
+	}
+}
+
+func TestCombineConfidenceFlatReference(t *testing.T) {
+	// Modest correlation but perfect energy reconciliation — the situation of a
+	// server-dominated home. With a flat reference (low CV) the correlation weight
+	// shifts onto reconciliation, so the candidate scores higher than under the
+	// default weighting. (r is chosen to clear the snoop gate, which multiplies
+	// both sides equally and would otherwise mask the reweight.)
+	r := 0.4
+	sig := confidenceSignals{
+		R: &r, HasMultiplier: true, MeterKwh: 35, MonitoredKwh: 30,
+		WindowPackets: 500, NBuckets: 144, NCandidates: 4,
+	}
+	plain, _ := combineConfidence(sig)
+	flat := sig
+	cv := 0.05
+	flat.RefCV = &cv
+	fc, parts := combineConfidence(flat)
+	if !(fc > plain) {
+		t.Fatalf("flat reference should shift weight onto reconciliation: %v vs %v", fc, plain)
+	}
+	if _, ok := parts["ref_cv"]; !ok {
+		t.Fatalf("ref_cv should be surfaced in the breakdown: %v", parts)
+	}
+}
+
+func TestSnoopFactorScreenedPool(t *testing.T) {
+	// The same modest r must survive better when the multiple-comparison family is
+	// the 4 physically-plausible meters instead of all 792 overheard ones.
+	r := 0.3
+	screened := snoopFactor(&r, 144, 4)
+	everyone := snoopFactor(&r, 144, 792)
+	if !(screened > everyone) {
+		t.Fatalf("screened pool should relax the correction: k=4 %v vs k=792 %v", screened, everyone)
+	}
+}
+
 func TestCombineConfidenceRewardsGoodMatch(t *testing.T) {
 	good := 0.95
 	weak := 0.2
