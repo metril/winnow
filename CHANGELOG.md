@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/metril/winnow/compare/v1.8.0...v1.9.0) (2026-06-10)
+
+
+### Features
+
+* **identify:** daily physics screen, glitch-filtered deltas, confidence fixes ([#15](https://github.com/metril/winnow/issues/15)) ([8f51a40](https://github.com/metril/winnow/commit/8f51a405a45467d35627d712b02de73cffd6c9b1))
+
 ## [1.8.0](https://github.com/metril/winnow/compare/v1.7.0...v1.8.0) (2026-06-07)
 
 
