@@ -644,6 +644,24 @@ ORDER BY d.day`, statID, tz, meters)
 	return out
 }
 
+// UtilityDailyEstimateRange returns the bill's daily estimate (flat + shaped)
+// restricted to local days [from, to] (YYYY-MM-DD), without the published-meter
+// overlay — the identify daily screen charts it next to monitored + candidates.
+func (d *DB) UtilityDailyEstimateRange(ctx context.Context, from, to string) []model.UtilityDayEstimate {
+	cfg, err := d.LoadConfig(ctx)
+	if err != nil || !cfg.UtilityConfigured() {
+		return nil
+	}
+	all := d.utilityDailyEstimateSeries(ctx, cfg.UtilityStatisticID, cfg.MonitoredEntities, cfg.HATimeZone, kwhFactor(cfg.UtilityUnit), nil)
+	out := make([]model.UtilityDayEstimate, 0, 64)
+	for _, e := range all {
+		if e.Day >= from && e.Day <= to {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // monitoredDailyKwh returns the monitored consumption per local-calendar day (kWh)
 // over [lo,hi), in ONE query — the daily counterpart to MonitoredEnergy. The range
 // is clamped to the actual reference-sample span so time_bucket_gapfill never fills

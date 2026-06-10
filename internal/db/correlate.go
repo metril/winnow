@@ -107,12 +107,36 @@ type regrRow struct {
 	nbuckets                     *int
 }
 
+// IdentifyAux carries window-independent context into the ranking: the daily
+// physics screen (computed once, valid for every window) and the size of the
+// SCREENED candidate pool for the data-snooping correction — the multiple-
+// comparison family should be the meters that are physically plausible, not
+// every meter ever overheard (k=792 demands r≳0.28 before any signal survives).
+type IdentifyAux struct {
+	Physics map[int64]PhysicsSignal
+	SnoopK  int // 0 = fall back to the count of meters with a computed r
+}
+
+// AuxFromScreen builds the ranking aux from a daily screen (nil-safe).
+func AuxFromScreen(screen *DailyScreen) *IdentifyAux {
+	if screen == nil {
+		return nil
+	}
+	return &IdentifyAux{Physics: screen.PhysicsMap(), SnoopK: screen.Survivors}
+}
+
 // CorrelationVsReference ranks meters against the TOTAL monitored power (sum of
 // the configured set). For each meter it computes, in-DB: Pearson r and the
 // linear regression of per-minute delta vs aggregate power — which yields the
 // unit multiplier (slope), the unmonitored baseline (intercept), and a floor
 // check. Returns rows + the monitored floor (W). Floor is a soft down-rank.
 func (d *DB) CorrelationVsReference(ctx context.Context, entities []string, start, end time.Time, bucketMin int, electricOnly bool) ([]model.CorrRow, float64, error) {
+	return d.CorrelationVsReferenceAux(ctx, entities, start, end, bucketMin, electricOnly, nil)
+}
+
+// CorrelationVsReferenceAux is CorrelationVsReference with the physics screen /
+// snoop-pool context applied to the confidence model.
+func (d *DB) CorrelationVsReferenceAux(ctx context.Context, entities []string, start, end time.Time, bucketMin int, electricOnly bool, aux *IdentifyAux) ([]model.CorrRow, float64, error) {
 	base, err := d.Correlation(ctx, start, end)
 	if err != nil {
 		return nil, 0, err
@@ -166,7 +190,7 @@ stepped AS (
   FROM mb),
 m AS (
   SELECT endpoint_id, b, `+rolloverDeltaSQL("raw", "modulus")+` AS delta
-  FROM stepped)
+  FROM stepped),`+glitchCleanCTEs("m", "b")+`
 SELECT m.endpoint_id,
        corr(m.delta, ref.energy_wh)            AS r,
        regr_slope(m.delta, ref.energy_wh)      AS slope,
@@ -179,8 +203,7 @@ SELECT m.endpoint_id,
        avg(m.delta)                             AS ybar,
        count(*)                                 AS nbuckets,
        percentile_cont(0.1) WITHIN GROUP (ORDER BY m.delta) AS p10
-FROM m JOIN ref USING (b)
-WHERE m.delta IS NOT NULL
+FROM glitch_clean m JOIN ref USING (b)
 GROUP BY m.endpoint_id
 HAVING count(*) >= 5`, start, end, entities, bucketMin)
 	if err == nil {
@@ -248,20 +271,40 @@ HAVING count(*) >= 5`, start, end, entities, bucketMin)
 		}
 	}
 
-	// Number of meters that produced a usable correlation this window — the size of
-	// the multiple-comparison family for the data-snooping correction.
+	// Size of the multiple-comparison family for the data-snooping correction:
+	// the screened pool when the physics screen ran, else every meter that
+	// produced a usable correlation this window.
 	nCandidates := 0
 	for i := range base {
 		if base[i].R != nil {
 			nCandidates++
 		}
 	}
+	if aux != nil && aux.SnoopK > 0 {
+		nCandidates = aux.SnoopK
+	}
+	refCV := d.MonitoredCV(ctx, entities, start, end)
 
 	// Compute the composite confidence from the within-window signals. The lag
 	// signal is filled in below for the top candidates (Stage-2 enrichment).
+	// A meter with NO computable correlation keeps a nil confidence: neutral
+	// component defaults must never let a no-evidence meter outrank measured ones.
 	for i := range base {
 		rr, ok := reg[base[i].EndpointID]
-		if !ok {
+		if !ok || base[i].R == nil {
+			// No correlation signal this window. A physics-screen SURVIVOR still
+			// deserves a (physics-only) confidence — a coarse 1 kWh-unit counter has
+			// quantization-mute correlation yet day-level containment is solid
+			// evidence. Mirrors combineConfidence's blend with the gated half at 0.
+			if aux != nil && aux.Physics != nil {
+				if p, ok2 := aux.Physics[base[i].EndpointID]; ok2 && p.Pass {
+					conf := clamp01(0.5 * p.Score)
+					base[i].Confidence = &conf
+					base[i].ConfidenceParts = map[string]float64{
+						"physics": round(p.Score, 3), "confidence": round(conf, 3),
+					}
+				}
+			}
 			continue
 		}
 		sig := confidenceSignals{
@@ -271,6 +314,7 @@ HAVING count(*) >= 5`, start, end, entities, bucketMin)
 			FloorOK:       base[i].FloorOK,
 			WindowPackets: base[i].WindowPackets,
 			NCandidates:   nCandidates,
+			RefCV:         refCV,
 		}
 		if base[i].MeterEnergyKwh != nil {
 			sig.MeterKwh = *base[i].MeterEnergyKwh
@@ -281,6 +325,7 @@ HAVING count(*) >= 5`, start, end, entities, bucketMin)
 		// change-point coherence: did the rate step up in-window vs the baseline?
 		cp := changePointCoherence(base[i].WindowRate, base[i].BaselineRate)
 		sig.ChangePoint = &cp
+		applyPhysics(&sig, aux, base[i].EndpointID)
 		conf, parts := combineConfidence(sig)
 		base[i].Confidence = &conf
 		base[i].ConfidenceParts = parts
@@ -289,7 +334,7 @@ HAVING count(*) >= 5`, start, end, entities, bucketMin)
 	// Stage-2 enrichment: for the strongest candidates, pull their aligned
 	// per-bucket series and fold the cross-correlation lag plausibility into
 	// confidence. Bounded to the top few so the extra query stays cheap.
-	d.enrichLag(ctx, base, entities, start, end, bucketMin, monitoredKwh, nCandidates)
+	d.enrichLag(ctx, base, entities, start, end, bucketMin, monitoredKwh, nCandidates, refCV, aux)
 
 	sort.SliceStable(base, func(i, j int) bool {
 		ci, cj := deref(base[i].Confidence), deref(base[j].Confidence)
@@ -301,10 +346,27 @@ HAVING count(*) >= 5`, start, end, entities, bucketMin)
 	return base, floor, nil
 }
 
+// applyPhysics folds the daily screen's verdict for one meter into its signals.
+func applyPhysics(sig *confidenceSignals, aux *IdentifyAux, id int64) {
+	if aux == nil || aux.Physics == nil {
+		return
+	}
+	p, ok := aux.Physics[id]
+	if !ok {
+		return
+	}
+	if p.Pass {
+		score := p.Score
+		sig.Physics = &score
+	} else {
+		sig.PhysicsViolation = true
+	}
+}
+
 // enrichLag computes the cross-correlation lag for the top candidates and folds a
 // lag-plausibility penalty into their confidence. Done as a bounded Stage-2 pass
 // (not for every meter) because it pulls per-bucket series.
-func (d *DB) enrichLag(ctx context.Context, base []model.CorrRow, entities []string, start, end time.Time, bucketMin int, monitoredKwh float64, nCandidates int) {
+func (d *DB) enrichLag(ctx context.Context, base []model.CorrRow, entities []string, start, end time.Time, bucketMin int, monitoredKwh float64, nCandidates int, refCV *float64, aux *IdentifyAux) {
 	const topN, maxLag = 8, 5
 	// pick the current top-N by confidence
 	idx := make([]int, 0, len(base))
@@ -348,12 +410,14 @@ func (d *DB) enrichLag(ctx context.Context, base []model.CorrRow, entities []str
 			NBuckets:      len(s.meter),
 			NCandidates:   nCandidates,
 			LagPenalty:    &lp,
+			RefCV:         refCV,
 		}
 		if base[i].MeterEnergyKwh != nil {
 			sig.MeterKwh = *base[i].MeterEnergyKwh
 		}
 		cp := changePointCoherence(base[i].WindowRate, base[i].BaselineRate)
 		sig.ChangePoint = &cp
+		applyPhysics(&sig, aux, base[i].EndpointID)
 		conf, parts := combineConfidence(sig)
 		base[i].Confidence = &conf
 		base[i].ConfidenceParts = parts
@@ -395,10 +459,9 @@ stepped AS (
   FROM mb),
 m AS (
   SELECT endpoint_id, b, `+rolloverDeltaSQL("raw", "modulus")+` AS delta
-  FROM stepped)
+  FROM stepped),`+glitchCleanCTEs("m", "b")+`
 SELECT m.endpoint_id, m.delta, ref.energy_wh
-FROM m JOIN ref USING (b)
-WHERE m.delta IS NOT NULL
+FROM glitch_clean m JOIN ref USING (b)
 ORDER BY m.endpoint_id, m.b`, start, end, entities, bucketMin, ids)
 	if err != nil {
 		return out, err
@@ -460,6 +523,16 @@ func (d *DB) aggregateWindows(ctx context.Context, useRef bool, src string, enti
 	if err != nil {
 		return nil, err
 	}
+	// The daily physics screen is window-independent — run it once and fold it
+	// into every window's confidence. Best-effort: ranking works without it.
+	var aux *IdentifyAux
+	if useRef {
+		if cfg, cerr := d.LoadConfig(ctx); cerr == nil {
+			if screen, serr := d.DailyReconciliation(ctx, entities, cfg.HATimeZone, nil); serr == nil {
+				aux = AuxFromScreen(screen)
+			}
+		}
+	}
 	type agg struct {
 		commodity string
 		scores    []float64
@@ -475,7 +548,16 @@ func (d *DB) aggregateWindows(ctx context.Context, useRef bool, src string, enti
 	for _, w := range wins {
 		var ranked []model.CorrRow
 		if useRef {
-			ranked, _, err = d.CorrelationVsReference(ctx, entities, w.start, w.end, PickBucketMin(int(w.end.Sub(w.start).Minutes())), true)
+			// per-window aux: prefer the snoop pool frozen at window close.
+			waux := aux
+			if w.snoopK != nil && *w.snoopK > 0 {
+				cp := IdentifyAux{SnoopK: *w.snoopK}
+				if aux != nil {
+					cp.Physics = aux.Physics
+				}
+				waux = &cp
+			}
+			ranked, _, err = d.CorrelationVsReferenceAux(ctx, entities, w.start, w.end, PickBucketMin(int(w.end.Sub(w.start).Minutes())), true, waux)
 		} else {
 			ranked, err = d.Correlation(ctx, w.start, w.end)
 		}

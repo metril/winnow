@@ -58,6 +58,30 @@ SELECT sum(coalesce(w,0))/60.0/1000.0 FROM per_min`, entity, start, end).Scan(&k
 	return round(*kwh, 3)
 }
 
+// MonitoredCV returns the coefficient of variation (stddev/mean) of the total
+// monitored power over [start,end], from per-minute gap-filled totals. A small
+// CV means the reference is nearly constant — correlation against it is noise —
+// and the confidence model shifts weight to energy reconciliation instead.
+func (d *DB) MonitoredCV(ctx context.Context, entities []string, start, end time.Time) *float64 {
+	if len(entities) == 0 {
+		return nil
+	}
+	var mean, sd *float64
+	_ = d.pool.QueryRow(ctx, `
+WITH per_entity AS (
+  SELECT time_bucket_gapfill('1 minute', ts) AS mt, entity_id, locf(avg(power_w)) AS w
+  FROM reference_samples
+  WHERE entity_id = ANY($1) AND ts >= $2 AND ts <= $3
+  GROUP BY mt, entity_id),
+per_min AS (SELECT mt, sum(coalesce(w,0)) AS w FROM per_entity GROUP BY mt)
+SELECT avg(w), stddev_samp(w) FROM per_min WHERE w > 0`, entities, start, end).Scan(&mean, &sd)
+	if mean == nil || sd == nil || *mean <= 0 {
+		return nil
+	}
+	cv := round(*sd / *mean, 3)
+	return &cv
+}
+
 // MonitoredFloor returns the user's baseline draw: a low percentile (5th) of the
 // total monitored power over [start,end]. This is the floor a real meter can
 // never go below.
