@@ -37,12 +37,17 @@ export default function LoadTests() {
               <Button variant="danger" icon={<Square size={14} />} onClick={() => stop(running.id)} success="Test stopped">Stop test</Button>
             </div>
           ) : (
-            <div className="flex flex-wrap items-end gap-2">
-              <Field label="what you're switching"><Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. kettle + oven" className="max-w-xs" /></Field>
-              <Field label="known load (W, optional)" hint="if you know the wattage, winnow calibrates directly">
+            // every column is exactly label+input (hints live in the label as
+            // tooltips), so items-end puts inputs and button on ONE baseline —
+            // a block hint under one field used to push everything apart
+            <div className="flex flex-wrap items-end gap-3">
+              <Field label="what you're switching">
+                <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. kettle + oven" className="w-56" />
+              </Field>
+              <Field label={<>known load (W, optional)<InfoHint>If you know the wattage, winnow calibrates the meter directly from the energy it should add.</InfoHint></>}>
                 <Input value={knownW} onChange={(e) => setKnownW(e.target.value)} placeholder="e.g. 1500" className="w-40" />
               </Field>
-              <Button variant="primary" icon={<Play size={14} />} onClick={start} success="Recording started">Start test</Button>
+              <Button variant="primary" icon={<Play size={14} />} onClick={start} success="Recording started" className="h-[38px]">Start test</Button>
             </div>
           )}
         </CardBody>
