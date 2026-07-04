@@ -1,7 +1,7 @@
 import {
-  Activity, Radio, Gauge, DollarSign, AlertTriangle, ArrowUpRight, Crosshair, Zap, Receipt,
+  Activity, Radio, Gauge, DollarSign, AlertTriangle, ArrowUpRight, Crosshair, Zap, Receipt, BarChart3, Star,
 } from "lucide-react";
-import { api, PublishedLive, Anomaly, UtilitySeries } from "../api";
+import { api, PublishedLive, MyMeter, Anomaly, UtilitySeries } from "../api";
 import { useLive, perMin } from "../live";
 import { useFetch } from "../fetch";
 import { useSourceLabels } from "../sources";
@@ -11,7 +11,7 @@ import { Card, CardHeader, CardBody, StatCard, Badge, Dot, Button, EmptyState, S
 import { Sparkline } from "./charts";
 import { useChartTheme } from "./chartTheme";
 
-export default function Overview({ onNav }: { onNav: (v: View) => void }) {
+export default function Overview({ onNav }: { onNav: (v: View, p?: (string | number)[]) => void }) {
   const chart = useChartTheme();
   const { power, powerHistory, readings, configVersion, connectedAt } = useLive();
   const ov = useFetch(api.overview, [configVersion]);
@@ -20,10 +20,13 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
   const srcLabel = useSourceLabels();
 
   const pubs = ov.data?.published || [];
+  const my = ov.data?.my_meter || null;
   const anomalies = ov.data?.anomalies || [];
   const cur = ov.data?.currency || "$";
-  const costToday = pubs.reduce((s, p) => s + (p.cost_today || 0), 0);
-  const todayKwh = pubs.filter((p) => p.commodity === "electric").reduce((s, p) => s + (p.today || 0), 0);
+  // Prefer YOUR meter's numbers for the headline tiles; fall back to the
+  // published sum for setups that publish without marking a meter as theirs.
+  const costToday = my && my.calibrated ? my.cost_today : pubs.reduce((s, p) => s + (p.cost_today || 0), 0);
+  const todayKwh = my && my.calibrated ? my.today : pubs.filter((p) => p.commodity === "electric").reduce((s, p) => s + (p.today || 0), 0);
   const spark = powerHistory.map((p) => p.v);
   // For the first minute after connecting (e.g. a refresh empties the SSE buffer),
   // floor the live count with the server's last-minute count so the rate shows
@@ -38,8 +41,9 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           {ov.data == null ? <Skeleton className="h-48" />
-            : pubs.length === 0 ? <OnboardingHero onNav={onNav} />
-              : <Hero pubs={pubs} power={power} spark={spark} cur={cur} />}
+            : my ? <MyHero my={my} power={power} spark={spark} cur={cur} onNav={onNav} />
+              : pubs.length > 0 ? <Hero pubs={pubs} power={power} spark={spark} cur={cur} />
+                : <OnboardingHero onNav={onNav} />}
         </div>
         <Card>
           <CardHeader title="System" icon={<Activity size={16} />} />
@@ -80,11 +84,16 @@ export default function Overview({ onNav }: { onNav: (v: View) => void }) {
           <CardHeader title="Your meters" subtitle="Published to Home Assistant"
             actions={<Button size="sm" variant="ghost" icon={<ArrowUpRight size={14} />} onClick={() => onNav("meters")}>All meters</Button>} />
           <CardBody>
-            {pubs.length === 0
-              ? <EmptyState icon={<Radio size={22} />} title="Nothing published yet"
-                action={<Button variant="primary" onClick={() => onNav("identify")}>Identify your meter</Button>}>
-                Find which meter is yours, then publish it.</EmptyState>
-              : <div className="grid gap-3 sm:grid-cols-2">{pubs.map((p) => <PubCard key={p.endpoint_id} p={p} cur={cur} onClick={() => onNav("meters")} />)}</div>}
+            {pubs.length > 0
+              ? <div className="grid gap-3 sm:grid-cols-2">{pubs.map((p) => <PubCard key={p.endpoint_id} p={p} cur={cur} onClick={() => onNav("meters", [p.endpoint_id])} />)}</div>
+              : my
+                ? <EmptyState icon={<Radio size={22} />} title="Not publishing to HA"
+                  action={<Button variant="default" onClick={() => onNav("settings")}>Open Settings</Button>}>
+                  Your meter's data is still captured and browsable in Usage. To feed it back to Home Assistant,
+                  configure an MQTT broker in Settings, then toggle publish on the meter.</EmptyState>
+                : <EmptyState icon={<Radio size={22} />} title="Nothing published yet"
+                  action={<Button variant="primary" onClick={() => onNav("identify")}>Identify your meter</Button>}>
+                  Find which meter is yours, then publish it.</EmptyState>}
           </CardBody>
         </Card>
         <Card>
@@ -126,6 +135,62 @@ function UtilityMini({ d, onNav }: { d: UtilitySeries; onNav: (v: View) => void 
           {tracking != null && <Metric label="winnow tracking" value={`${tracking}%`} tone={Math.abs(tracking - 100) <= 15 ? "text-good" : "text-gold"} />}
           {recent.length > 1 && <div className="ml-auto h-10 w-40"><Sparkline data={recent} color={chart.gold} height={40} /></div>}
         </div>
+      </CardBody>
+    </Card>
+  );
+}
+
+const ago = (ts: string): string => {
+  const s = Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 1000));
+  if (s < 90) return `${s}s ago`;
+  if (s < 5400) return `${Math.round(s / 60)}m ago`;
+  return `${Math.round(s / 3600)}h ago`;
+};
+
+// PublishChip tells the truth about the HA feed: gold only when the worker's
+// broker session is up AND a publish actually landed recently.
+function PublishChip({ my }: { my: MyMeter }) {
+  const p = my.publish;
+  if (!p.enabled) return <Badge>not published</Badge>;
+  const fresh = p.last_publish_ts != null && Date.now() - new Date(p.last_publish_ts).getTime() < 10 * 60_000;
+  if (p.broker_connected && fresh) return <Badge tone="gold"><Radio size={11} /> feeding HA · {ago(p.last_publish_ts!)}</Badge>;
+  if (p.broker_connected) return <Badge tone="brand"><Radio size={11} /> publish on — waiting for packets</Badge>;
+  return <Badge tone="bad"><Radio size={11} /> not publishing — broker unreachable</Badge>;
+}
+
+function MyHero({ my, power, spark, cur, onNav }:
+  { my: MyMeter; power: number | null; spark: number[]; cur: string; onNav: (v: View, p?: (string | number)[]) => void }) {
+  const unit = my.unit;
+  return (
+    <Card variant="accent" className="relative overflow-hidden">
+      <div className="pointer-events-none absolute inset-0" style={{ background: "radial-gradient(600px 240px at 85% -20%, rgb(var(--brand) / 0.10), transparent 60%)" }} />
+      <CardBody>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-h3">{my.label || `Meter #${my.endpoint_id}`}</span>
+          {my.is_mine
+            ? <Badge tone="brand"><Star size={11} /> your meter</Badge>
+            : <Badge tone="gold">likely yours — unconfirmed</Badge>}
+          <PublishChip my={my} />
+          <span className="ml-auto id-pill">#{my.endpoint_id}</span>
+        </div>
+        <div className="mt-4 flex items-end gap-2">
+          <span className="text-display tabular-nums text-brand">{fmt(my.today, 1)}</span>
+          <span className="mb-1.5 text-secondary">{unit} <span className="text-tertiary">today</span></span>
+          {power != null && <span className="mb-1.5 ml-auto text-secondary tabular-nums">{fmt(power)} W <span className="text-tertiary">monitored now</span></span>}
+        </div>
+        {spark.length > 1 && <div className="mt-1 h-12"><Sparkline data={spark} height={48} /></div>}
+        <div className="mt-4 flex flex-wrap items-end gap-x-8 gap-y-2 border-t border-border pt-3 text-small">
+          <Metric label="This week" value={`${fmt(my.week, 1)} ${unit}`} />
+          <Metric label="This month" value={`${fmt(my.month, 1)} ${unit}`} />
+          {my.rate != null && <Metric label="Rate" value={`${fmt(my.rate, 2)} ${unit}/h`} />}
+          {my.cost_today > 0 && <Metric label="Cost today" value={`${cur}${fmt(my.cost_today, 2)}`} tone="text-good" />}
+          <div className="ml-auto">
+            <Button size="sm" variant="primary" icon={<BarChart3 size={14} />} onClick={() => onNav("usage", [my.endpoint_id])}>View usage</Button>
+          </div>
+        </div>
+        {!my.calibrated && (
+          <div className="mt-2 text-micro text-tertiary">Values are raw counter units — calibrate on Identify to show kWh.</div>
+        )}
       </CardBody>
     </Card>
   );

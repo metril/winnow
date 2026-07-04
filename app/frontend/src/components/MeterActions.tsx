@@ -37,9 +37,18 @@ export function PublishToggle({ id, publish, onChange }: { id: number; publish: 
   const toast = useToast();
   const [ask, setAsk] = useState(false);
   const next = !publish;
+  // Only claim "Publishing" when the worker's broker session is actually up —
+  // a publish with no broker used to toast success while silently no-oping.
   const confirm = () =>
     api.patchMeter(id, { publish: next, is_mine: true })
-      .then(() => { setAsk(false); toast.show(next ? "Publishing to HA" : "Unpublished", "good"); onChange?.(); })
+      .then(async () => {
+        setAsk(false);
+        if (!next) { toast.show("Unpublished", "good"); onChange?.(); return; }
+        const st = await api.status().catch(() => null);
+        if (st && !st.mqtt_connected) toast.show("Publish enabled — waiting for an MQTT broker (Settings → MQTT)", "info");
+        else toast.show("Publishing to HA", "good");
+        onChange?.();
+      })
       .catch((e) => toast.show(String(e), "bad"));
   return (
     <>

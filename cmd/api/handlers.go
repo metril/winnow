@@ -376,8 +376,14 @@ func (s *server) handleIntegrationsStatus(w http.ResponseWriter, r *http.Request
 	mqOK, _ := mqttReachable(cfg.MQTTHost, cfg.MQTTPort)
 	pub, _ := s.d.MetersForPublish(r.Context())
 	floor := s.d.MonitoredFloor(r.Context(), cfg.MonitoredEntities, time.Now().Add(-24*time.Hour), time.Now())
+	// mqtt_ok is only "a TCP dial succeeded"; mqtt_connected is the worker's own
+	// session state — the one that decides whether publishes actually flow.
+	ws, wsKnown := s.d.GetWorkerStatus(r.Context())
 	writeJSON(w, map[string]any{
 		"ha_ok": haOK, "mqtt_ok": mqOK,
+		"mqtt_connected":     wsKnown && ws.MQTTConnected,
+		"worker_status":      ws,
+		"publish_status":     s.d.PublishStatuses(r.Context()),
 		"monitored_entities": cfg.MonitoredEntities,
 		"monitored_floor_w":  floor,
 		"published":          pub,
@@ -812,12 +818,24 @@ func (s *server) handleAnomalies(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, a)
 }
 
-// handleOverview is the glanceable dashboard payload: each published meter with
-// its live rate, today's consumption and estimated cost, plus anomalies.
+// handleOverview is the glanceable dashboard payload: YOUR meter (is_mine, or
+// the labeled candidate) with local-day/week/month usage and honest publish
+// status, each published meter with its live rate and today's cost, plus
+// anomalies. Day boundaries use HA's timezone — the same calendar every other
+// daily view uses — not UTC midnight.
 func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
-	cfg, _ := s.d.LoadConfig(r.Context())
-	pubs, _ := s.d.MetersForPublish(r.Context())
-	midnight := time.Now().UTC().Truncate(24 * time.Hour)
+	ctx := r.Context()
+	cfg, _ := s.d.LoadConfig(ctx)
+	loc, lerr := time.LoadLocation(cfg.HATimeZone)
+	if lerr != nil || cfg.HATimeZone == "" {
+		loc = time.UTC
+	}
+	now := time.Now().In(loc)
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	weekStart := midnight.AddDate(0, 0, -int(midnight.Weekday())) // Sunday, like the Usage view
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
+
+	pubs, _ := s.d.MetersForPublish(ctx)
 	type pubRow struct {
 		EndpointID int64    `json:"endpoint_id"`
 		Name       string   `json:"name"`
@@ -825,8 +843,14 @@ func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		Unit       string   `json:"unit"`
 		Multiplier float64  `json:"multiplier"`
 		Rate       *float64 `json:"rate"`       // current units/hour (×multiplier)
-		TodayValue float64  `json:"today"`      // consumption since midnight (×multiplier)
+		TodayValue float64  `json:"today"`      // consumption since local midnight (×multiplier)
 		CostToday  float64  `json:"cost_today"` // electric only
+	}
+	movement := func(id int64, since time.Time, mult float64) float64 {
+		if v := s.d.MovementBetween(ctx, id, since, time.Now()); v != nil {
+			return round(*v*mult, 3)
+		}
+		return 0
 	}
 	rowsOut := []pubRow{}
 	for _, m := range pubs {
@@ -837,8 +861,8 @@ func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		if m.PubUnit != nil {
 			row.Unit = *m.PubUnit
 		}
-		row.TodayValue = round(s.d.MovementSince(r.Context(), m.EndpointID, midnight)*m.PubMultiplier, 3)
-		if v, ok := s.d.DerivedPower(r.Context(), m.EndpointID, m.PubMultiplier); ok {
+		row.TodayValue = movement(m.EndpointID, midnight, m.PubMultiplier)
+		if v, ok := s.d.DerivedPower(ctx, m.EndpointID, m.PubMultiplier); ok {
 			v = round(v, 3)
 			row.Rate = &v
 		}
@@ -847,13 +871,73 @@ func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 		rowsOut = append(rowsOut, row)
 	}
-	anomalies, _ := s.d.Anomalies(r.Context(), s.liveSources(r))
+
+	// your meter — the dashboard's center, whether or not it's published
+	var myMeter map[string]any
+	if m, ok := s.d.MyMeter(ctx); ok {
+		calibrated := m.PubUnit != nil && *m.PubUnit != ""
+		unit := "counts"
+		if calibrated {
+			unit = *m.PubUnit
+		}
+		today := movement(m.EndpointID, midnight, m.PubMultiplier)
+		var rate *float64
+		if v, rok := s.d.DerivedPower(ctx, m.EndpointID, m.PubMultiplier); rok {
+			v = round(v, 3)
+			rate = &v
+		}
+		ws, _ := s.d.GetWorkerStatus(ctx)
+		var ps *db.PubStatus
+		if p, pok := s.d.PublishStatuses(ctx)[m.EndpointID]; pok {
+			ps = &p
+		}
+		var costToday float64
+		if cfg.CostPerKwh > 0 && calibrated {
+			costToday = round(today*cfg.CostPerKwh, 2)
+		}
+		myMeter = map[string]any{
+			"endpoint_id":  m.EndpointID,
+			"label":        m.Label,
+			"is_mine":      m.IsMine,
+			"is_candidate": m.IsCandidate,
+			"calibrated":   calibrated,
+			"multiplier":   m.PubMultiplier,
+			"unit":         unit,
+			"today":        today,
+			"week":         movement(m.EndpointID, weekStart, m.PubMultiplier),
+			"month":        movement(m.EndpointID, monthStart, m.PubMultiplier),
+			"cost_today":   costToday,
+			"rate":         rate,
+			"publish": map[string]any{
+				"enabled":          m.Publish,
+				"broker_connected": ws.MQTTConnected,
+				"last_publish_ts":  psTS(ps),
+				"last_error":       psErr(ps),
+			},
+		}
+	}
+
+	anomalies, _ := s.d.Anomalies(ctx, s.liveSources(r))
 	writeJSON(w, map[string]any{
 		"currency":     cfg.Currency,
 		"cost_per_kwh": cfg.CostPerKwh,
+		"my_meter":     myMeter,
 		"published":    rowsOut,
 		"anomalies":    anomalies,
 	})
+}
+
+func psTS(p *db.PubStatus) *time.Time {
+	if p == nil {
+		return nil
+	}
+	return p.LastPublishTS
+}
+func psErr(p *db.PubStatus) *string {
+	if p == nil {
+		return nil
+	}
+	return p.LastError
 }
 
 // --- admin / maintenance ----------------------------------------------------

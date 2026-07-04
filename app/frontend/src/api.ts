@@ -67,8 +67,12 @@ export interface Health {
   alive: boolean; sources: SourceHealth[]; unique_meters: number; packets_last_min: number;
 }
 
+export interface PubStatus { last_publish_ts: string | null; last_error: string | null; updated_at: string | null; }
 export interface Status {
   ha_ok: boolean; mqtt_ok: boolean;
+  mqtt_connected: boolean;
+  worker_status?: { mqtt_connected: boolean; detail?: string; updated_at: string };
+  publish_status?: Record<string, PubStatus>;
   monitored_entities: string[]; monitored_floor_w: number; published: Meter[];
 }
 
@@ -102,8 +106,24 @@ export interface PublishedLive {
   endpoint_id: number; name: string; commodity: string; unit: string;
   multiplier: number; rate: number | null; today: number; cost_today: number;
 }
+export interface MyMeter {
+  endpoint_id: number;
+  label: string | null;
+  is_mine: boolean;
+  is_candidate: boolean;
+  calibrated: boolean;
+  multiplier: number;
+  unit: string;
+  today: number;
+  week: number;
+  month: number;
+  cost_today: number;
+  rate: number | null;
+  publish: { enabled: boolean; broker_connected: boolean; last_publish_ts: string | null; last_error: string | null };
+}
 export interface Overview {
-  currency: string; cost_per_kwh: number; published: PublishedLive[]; anomalies: Anomaly[];
+  currency: string; cost_per_kwh: number; my_meter: MyMeter | null;
+  published: PublishedLive[]; anomalies: Anomaly[];
 }
 export interface Benchmark {
   endpoint_id: number; commodity: string; days: number;
