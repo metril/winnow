@@ -6,6 +6,7 @@ package db
 import (
 	"context"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,7 +16,20 @@ import (
 )
 
 // DB wraps a pgx pool.
-type DB struct{ pool *pgxpool.Pool }
+type DB struct {
+	pool *pgxpool.Pool
+
+	// dailyMemo caches the last extraIDs-free daily physics screen: the screen
+	// only changes when a new full local day lands or the config (its cache
+	// key) changes, yet identify recomputes it on every request. Guarded by a
+	// short TTL; results must be treated as immutable by callers.
+	dailyMemo struct {
+		mu     sync.Mutex
+		key    string
+		at     time.Time
+		screen *DailyScreen
+	}
+}
 
 // New opens a pool against dsn.
 func New(ctx context.Context, dsn string) (*DB, error) {
@@ -119,13 +133,13 @@ func (d *DB) PruneDevices(ctx context.Context, keep []string) error {
 
 // Device is one detected SDR dongle joined with live capture health.
 type Device struct {
-	Serial         string   `json:"serial"`
-	DevIndex       int      `json:"dev_index"`
-	Name           string   `json:"name"`
-	Tuner          string   `json:"tuner"`
-	LastSeen       *string  `json:"last_seen"`
-	Enabled        bool     `json:"enabled"`
-	Label          string   `json:"label"`
+	Serial   string  `json:"serial"`
+	DevIndex int     `json:"dev_index"`
+	Name     string  `json:"name"`
+	Tuner    string  `json:"tuner"`
+	LastSeen *string `json:"last_seen"`
+	Enabled  bool    `json:"enabled"`
+	Label    string  `json:"label"`
 	// per-dongle scan overrides (empty = inherit the global default)
 	Freq           string   `json:"freq"`
 	Gain           string   `json:"gain"`

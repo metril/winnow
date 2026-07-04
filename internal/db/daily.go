@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"winnow/internal/ert"
@@ -58,7 +59,7 @@ type DailyScreen struct {
 	Survivors    int             `json:"survivors"`
 	ExcludedDays int             `json:"excluded_days"` // days dropped: reference feed didn't cover them
 	CoverageMin  float64         `json:"coverage_min"`  // per-day coverage threshold applied
-	Rows         []DailyMeterRow `json:"rows"` // passers (best first), then any requested failures
+	Rows         []DailyMeterRow `json:"rows"`          // passers (best first), then any requested failures
 
 	// verdicts holds a signal for EVERY meter the screen could evaluate (full
 	// day coverage), not just the rows kept for display: passers carry their
@@ -93,6 +94,33 @@ const (
 // result (with their failure reason) even when they fail — the UI uses that to
 // chart arbitrary meters against the monitored/bill lines.
 func (d *DB) DailyReconciliation(ctx context.Context, entities []string, tz string, extraIDs []int64) (*DailyScreen, error) {
+	// The screen is window-independent and only changes when a new full local
+	// day materializes, yet identify/stop-test/combined all recompute it. Memo
+	// the extraIDs-free form for a few minutes; the key IS the config inputs,
+	// so a settings change misses the cache naturally. Cached screens are
+	// shared — treat them as immutable.
+	const memoTTL = 5 * time.Minute
+	memoKey := ""
+	if len(extraIDs) == 0 {
+		memoKey = tz + "|" + strings.Join(entities, ",")
+		d.dailyMemo.mu.Lock()
+		if d.dailyMemo.screen != nil && d.dailyMemo.key == memoKey && time.Since(d.dailyMemo.at) < memoTTL {
+			s := d.dailyMemo.screen
+			d.dailyMemo.mu.Unlock()
+			return s, nil
+		}
+		d.dailyMemo.mu.Unlock()
+	}
+	screenOut, err := d.dailyReconciliation(ctx, entities, tz, extraIDs)
+	if err == nil && memoKey != "" && screenOut != nil {
+		d.dailyMemo.mu.Lock()
+		d.dailyMemo.key, d.dailyMemo.at, d.dailyMemo.screen = memoKey, time.Now(), screenOut
+		d.dailyMemo.mu.Unlock()
+	}
+	return screenOut, err
+}
+
+func (d *DB) dailyReconciliation(ctx context.Context, entities []string, tz string, extraIDs []int64) (*DailyScreen, error) {
 	loc, err := time.LoadLocation(tz)
 	if err != nil || tz == "" {
 		loc, tz = time.UTC, "UTC"

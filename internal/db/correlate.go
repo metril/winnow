@@ -177,7 +177,7 @@ mb AS (
   SELECT r.endpoint_id, time_bucket(make_interval(mins => $4), r.bucket) AS b,
          max(r.max_c) AS cmax,
          CASE WHEN mi.msg_type = 'SCM' THEN 16777216.0 ELSE 4294967296.0 END AS modulus
-  FROM readings_1m r JOIN meter_index mi USING (endpoint_id)
+  FROM `+deltaSource(bucketMin)+` r JOIN meter_index mi USING (endpoint_id)
   WHERE r.bucket >= $1 AND r.bucket <= $2
   GROUP BY r.endpoint_id, b, modulus),
 stepped AS (
@@ -422,6 +422,17 @@ func (d *DB) enrichLag(ctx context.Context, base []model.CorrRow, entities []str
 
 // alignedPair holds one meter's bucket-ordered energy deltas and the matching
 // monitored-energy values, for cross-correlation.
+
+// deltaSource picks the continuous aggregate the meter-delta ladder reads:
+// sub-hour correlation buckets need minute maxima; hourly and coarser buckets
+// read readings_1h, keeping long-window identify off the much larger 1m rows.
+func deltaSource(bucketMin int) string {
+	if bucketMin >= 60 {
+		return "readings_1h"
+	}
+	return "readings_1m"
+}
+
 type alignedPair struct{ meter, ref []float64 }
 
 // alignedSeries returns, per meter id, the bucket-ordered (delta, reference Wh)
@@ -442,7 +453,7 @@ mb AS (
   SELECT r.endpoint_id, time_bucket(make_interval(mins => $4), r.bucket) AS b,
          max(r.max_c) AS cmax,
          CASE WHEN mi.msg_type = 'SCM' THEN 16777216.0 ELSE 4294967296.0 END AS modulus
-  FROM readings_1m r JOIN meter_index mi USING (endpoint_id)
+  FROM `+deltaSource(bucketMin)+` r JOIN meter_index mi USING (endpoint_id)
   WHERE r.endpoint_id = ANY($5) AND r.bucket >= $1 AND r.bucket <= $2
   GROUP BY r.endpoint_id, b, modulus),
 stepped AS (
@@ -514,6 +525,13 @@ func (d *DB) aggregateWindows(ctx context.Context, useRef bool, src string, enti
 	wins, err := d.closedWindows(ctx, src)
 	if err != nil {
 		return nil, err
+	}
+	// Each window runs a full correlation pass; the auto-window detector can
+	// accumulate windows without bound over months of capture. The most recent
+	// windows carry the evidence — cap the recompute.
+	const maxWindows = 20
+	if len(wins) > maxWindows {
+		wins = wins[len(wins)-maxWindows:]
 	}
 	// The daily physics screen is window-independent — run it once and fold it
 	// into every window's confidence. Best-effort: ranking works without it.
