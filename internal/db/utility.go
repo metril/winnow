@@ -654,9 +654,47 @@ func (d *DB) UtilityDailyEstimateRange(ctx context.Context, from, to string) []m
 	}
 	all := d.utilityDailyEstimateSeries(ctx, cfg.UtilityStatisticID, cfg.MonitoredEntities, cfg.HATimeZone, kwhFactor(cfg.UtilityUnit), nil)
 	out := make([]model.UtilityDayEstimate, 0, 64)
+	lastReal := ""
 	for _, e := range all {
+		if e.Day > lastReal {
+			lastReal = e.Day
+		}
 		if e.Day >= from && e.Day <= to {
 			out = append(out, e)
+		}
+	}
+	// Monthly utilities lag ~45 days, so recent days have no bill to spread —
+	// which used to mean NO estimate line at all once capture outran the bills.
+	// Project the missing tail from the historical mean daily rate of the same
+	// calendar month (the signal the physics screen's band already trusts),
+	// flagged so the UI can say it's a projection. Real bills replace these as
+	// they post.
+	if to > lastReal {
+		rates, ok := d.billMonthlyRates(ctx)
+		if !ok {
+			return out
+		}
+		loc, lerr := time.LoadLocation(cfg.HATimeZone)
+		if lerr != nil || cfg.HATimeZone == "" {
+			loc = time.UTC
+		}
+		start := from
+		if lastReal != "" && lastReal >= from {
+			if t, perr := time.ParseInLocation("2006-01-02", lastReal, loc); perr == nil {
+				start = t.AddDate(0, 0, 1).Format("2006-01-02")
+			}
+		}
+		t, perr := time.ParseInLocation("2006-01-02", start, loc)
+		endT, perr2 := time.ParseInLocation("2006-01-02", to, loc)
+		if perr != nil || perr2 != nil {
+			return out
+		}
+		for ; !t.After(endT); t = t.AddDate(0, 0, 1) {
+			if mean, mok := billDailyMonthMean(rates, t.Format("01")); mok {
+				out = append(out, model.UtilityDayEstimate{
+					Day: t.Format("2006-01-02"), FlatKwh: mean, Projected: true,
+				})
+			}
 		}
 	}
 	return out

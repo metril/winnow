@@ -110,6 +110,10 @@ type UtilityDayEstimate struct {
 	FlatKwh   float64  `json:"flat_kwh"`   // bill / days-in-month
 	ShapedKwh *float64 `json:"shaped_kwh"` // bill × monitored_day/monitored_month (nil if no monitored sensors)
 	MeterKwh  *float64 `json:"meter_kwh"`  // candidate's metered energy that day (at the utility multiplier)
+	// Projected marks days after the last posted bill, estimated from the
+	// historical mean daily rate of the same calendar month (monthly utilities
+	// lag ~45 days; without this the estimate line vanished for current days).
+	Projected bool `json:"projected,omitempty"`
 }
 
 // UtilityCompareResult backs the per-meter "compare vs utility bill" panel.

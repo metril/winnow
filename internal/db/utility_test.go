@@ -440,3 +440,76 @@ func TestUpsertUtilityEnergyIdempotent(t *testing.T) {
 		t.Errorf("total energy = %.3f, want 350 (revised)", e)
 	}
 }
+
+// TestUtilityDailyEstimateProjection: monthly bills lag ~45 days, so the daily
+// estimate must project past the last posted bill from the historical mean
+// daily rate of the same calendar month — flagged, and never overriding days a
+// real bill covers.
+func TestUtilityDailyEstimateProjection(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	ctx := context.Background()
+	statID := "sensor:proj_bill"
+
+	// Contiguous monthly bills (like real Opower) ending two months ago — the
+	// lag. The same calendar month as NOW appears once, a year back, at
+	// 33 kWh/day; every other month bills at 60/day. The projection for the
+	// current month must use the same-month rate (33), not the off-season 60s.
+	now := time.Now().UTC()
+	thisMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	var ts []time.Time
+	var kwh []float64
+	daysIn := func(t0 time.Time) float64 { return float64(t0.AddDate(0, 1, -1).Day()) }
+	for i := -14; i <= -2; i++ {
+		m := thisMonth.AddDate(0, i, 0)
+		rate := 60.0
+		if m.Month() == thisMonth.Month() {
+			rate = 33.0
+		}
+		ts = append(ts, m)
+		kwh = append(kwh, rate*daysIn(m))
+	}
+	if err := d.UpsertUtilityEnergy(ctx, statID, "month", ts, kwh); err != nil {
+		t.Fatalf("seed bills: %v", err)
+	}
+	for k, v := range map[string]string{
+		config.KeyUtilityStatisticID: statID,
+		config.KeyUtilityUnit:        "kWh",
+		config.KeyHATimeZone:         "UTC",
+	} {
+		if err := d.SetSetting(ctx, k, v); err != nil {
+			t.Fatalf("set %s: %v", k, err)
+		}
+	}
+
+	// request a range entirely AFTER the last billed day (this month's days)
+	from := thisMonth.Format("2006-01-02")
+	to := thisMonth.AddDate(0, 0, 6).Format("2006-01-02")
+	est := d.UtilityDailyEstimateRange(ctx, from, to)
+	if len(est) != 7 {
+		t.Fatalf("projected days = %d, want 7 (%v)", len(est), est)
+	}
+	for _, e := range est {
+		if !e.Projected {
+			t.Fatalf("day %s not flagged projected", e.Day)
+		}
+		if e.FlatKwh < 32.5 || e.FlatKwh > 33.5 {
+			t.Fatalf("day %s projected %.2f kWh/day, want ≈33 (same-month rate, not the 60/day off-season)", e.Day, e.FlatKwh)
+		}
+	}
+
+	// a range inside a spread billed month keeps its real (unflagged) estimates
+	mid := thisMonth.AddDate(0, -4, 0)
+	real := d.UtilityDailyEstimateRange(ctx, mid.Format("2006-01-02"), mid.AddDate(0, 0, 4).Format("2006-01-02"))
+	if len(real) == 0 {
+		t.Fatalf("no real estimate days in billed month")
+	}
+	for _, e := range real {
+		if e.Projected {
+			t.Fatalf("billed day %s wrongly flagged projected", e.Day)
+		}
+		if e.FlatKwh < 32 || e.FlatKwh > 61 {
+			t.Fatalf("billed day %s flat %.2f, out of range", e.Day, e.FlatKwh)
+		}
+	}
+}
