@@ -379,8 +379,14 @@ func (s *server) handleIntegrationsStatus(w http.ResponseWriter, r *http.Request
 	// mqtt_ok is only "a TCP dial succeeded"; mqtt_connected is the worker's own
 	// session state — the one that decides whether publishes actually flow.
 	ws, wsKnown := s.d.GetWorkerStatus(r.Context())
+	// ha_ok (reachability) and reference freshness are SEPARATE facts: the API
+	// reached HA all through a 23-day feed outage. The UI must show both.
+	ref := s.d.ReferenceHealth(r.Context(), cfg.MonitoredEntities)
 	writeJSON(w, map[string]any{
 		"ha_ok": haOK, "mqtt_ok": mqOK,
+		"ha_reachable":       haOK,
+		"reference":          ref,
+		"reference_fresh":    ref.Configured && !ref.Stale,
 		"mqtt_connected":     wsKnown && ws.MQTTConnected,
 		"worker_status":      ws,
 		"publish_status":     s.d.PublishStatuses(r.Context()),
@@ -810,12 +816,33 @@ func (s *server) liveSources(r *http.Request) []string {
 }
 
 func (s *server) handleAnomalies(w http.ResponseWriter, r *http.Request) {
-	a, err := s.d.Anomalies(r.Context(), s.liveSources(r))
+	a, err := s.anomaliesWithReference(r)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	writeJSON(w, a)
+}
+
+// anomaliesWithReference prepends a reference_stale alert when the monitored
+// feed has stopped flowing — the exact failure that once went unnoticed for 23
+// days while ha_ok stayed green (connectivity ≠ data).
+func (s *server) anomaliesWithReference(r *http.Request) ([]db.Anomaly, error) {
+	a, err := s.d.Anomalies(r.Context(), s.liveSources(r))
+	if err != nil {
+		return nil, err
+	}
+	cfg, _ := s.d.LoadConfig(r.Context())
+	if cfg.ReferenceConfigured() {
+		if rh := s.d.ReferenceHealth(r.Context(), cfg.MonitoredEntities); rh.Stale {
+			detail := "no monitored samples — identification is paused; check the worker and HA connection"
+			if rh.LastSampleTS != nil {
+				detail = "no monitored samples since " + *rh.LastSampleTS + " — identification is paused; check the worker and HA connection"
+			}
+			a = append([]db.Anomaly{{Kind: "reference_stale", Detail: detail}}, a...)
+		}
+	}
+	return a, nil
 }
 
 // handleOverview is the glanceable dashboard payload: YOUR meter (is_mine, or
@@ -917,7 +944,7 @@ func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	anomalies, _ := s.d.Anomalies(ctx, s.liveSources(r))
+	anomalies, _ := s.anomaliesWithReference(r)
 	writeJSON(w, map[string]any{
 		"currency":     cfg.Currency,
 		"cost_per_kwh": cfg.CostPerKwh,

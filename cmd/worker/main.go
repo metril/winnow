@@ -354,6 +354,39 @@ func (w *worker) haLoop(ctx context.Context) {
 			}
 		}()
 
+		// Keepalive: HA power sensors report on CHANGE, so a steady load can be
+		// legitimately silent — indistinguishable from a dead feed. While the
+		// subscription is healthy, re-insert each entity's last value every 5
+		// minutes, so downstream "no samples for >15 min" means exactly one
+		// thing: the feed is dead. This is what makes the bounded gap-fill safe.
+		var kaMu sync.Mutex
+		type kaSample struct {
+			ts time.Time
+			w  float64
+		}
+		kaLast := map[string]kaSample{}
+		go func() {
+			t := time.NewTicker(5 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-subCtx.Done():
+					return
+				case <-t.C:
+					now := time.Now()
+					kaMu.Lock()
+					for e, s := range kaLast {
+						if now.Sub(s.ts) >= 5*time.Minute {
+							if w.d.InsertReferenceSample(subCtx, e, now, s.w) == nil {
+								kaLast[e] = kaSample{ts: now, w: s.w}
+							}
+						}
+					}
+					kaMu.Unlock()
+				}
+			}
+		}()
+
 		err := ha.Stream(subCtx, cfg.HAURL, cfg.HAToken, entities, func(entity string, s ha.Sample) {
 			in, ok := info[entity]
 			if !ok {
@@ -388,6 +421,9 @@ func (w *worker) haLoop(ctx context.Context) {
 				return
 			}
 			_ = w.d.InsertReferenceSample(subCtx, entity, s.TS, powerW)
+			kaMu.Lock()
+			kaLast[entity] = kaSample{ts: s.TS, w: powerW}
+			kaMu.Unlock()
 			lastPower[entity] = powerW
 			agg := 0.0
 			for _, v := range lastPower {

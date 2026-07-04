@@ -269,7 +269,8 @@ function PubCard({ p, cur, onClick }: { p: PublishedLive; cur: string; onClick: 
   );
 }
 function AlertRow({ a, srcLabel }: { a: Anomaly; srcLabel: (s: string) => string }) {
-  const label = a.kind === "dropout" ? "Dropout" : a.kind === "stuck" ? "Stuck odometer" : "Source down";
+  const label = a.kind === "dropout" ? "Dropout" : a.kind === "stuck" ? "Stuck odometer"
+    : a.kind === "reference_stale" ? "Reference feed down" : "Source down";
   const who = a.source ? srcLabel(a.source) : a.endpoint_id ? `#${a.endpoint_id}` : "";
   return (
     <div className="flex items-center gap-2.5 rounded-lg bg-bad/5 px-3 py-2 text-small">

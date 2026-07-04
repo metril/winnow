@@ -338,14 +338,17 @@ func TestMonitoredFloorAndAggregateSum(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
 	ctx := context.Background()
-	// two monitored entities; one drops out for a stretch (locf must carry it).
-	for m := 0; m < 30; m++ {
+	// Two monitored entities; one goes silent at minute 15. The carry must hold
+	// its value WITHIN refCarryLimit (change-driven sensors are legitimately
+	// quiet; the worker keepalive refreshes them every 5 min), then expire —
+	// never fabricate it indefinitely like the pre-incident unbounded locf.
+	for m := 0; m < 45; m++ {
 		addRefEntity(t, d, "sensor.a", float64(m)+0.2, 200)
-		if m < 15 { // sensor.b stops reporting after minute 15 -> locf holds 50
+		if m < 15 { // sensor.b stops reporting after minute 15
 			addRefEntity(t, d, "sensor.b", float64(m)+0.3, 50)
 		}
 	}
-	start, end := base, base.Add(30*time.Minute)
+	start, end := base, base.Add(45*time.Minute)
 	series, err := d.AggregateSeries(ctx, []string{"sensor.a", "sensor.b"}, start, end, "5m")
 	if err != nil {
 		t.Fatal(err)
@@ -353,14 +356,28 @@ func TestMonitoredFloorAndAggregateSum(t *testing.T) {
 	if len(series) == 0 {
 		t.Fatal("empty aggregate series")
 	}
-	// after b drops out, aggregate stays 250 (200 + locf 50), never back to 200
-	last := series[len(series)-1].Value
-	if last < 240 || last > 260 {
-		t.Fatalf("locf sum wrong at end: %v (want ~250)", last)
+	byBucket := func(min float64) float64 {
+		want := base.Add(time.Duration(min) * time.Minute)
+		for _, p := range series {
+			ts, _ := time.Parse(time.RFC3339Nano, p.Bucket)
+			if ts.Equal(want) {
+				return p.Value
+			}
+		}
+		t.Fatalf("bucket at +%vm missing", min)
+		return 0
+	}
+	// minute 20–25: b silent but within the carry bound → still 250
+	if v := byBucket(20); v < 240 || v > 260 {
+		t.Fatalf("in-bound carry: got %v at +20m, want ~250", v)
+	}
+	// minute 40–45: b's carry expired → honest 200, not a fabricated 250
+	if v := byBucket(40); v < 190 || v > 210 {
+		t.Fatalf("expired carry: got %v at +40m, want ~200", v)
 	}
 	floor := d.MonitoredFloor(ctx, []string{"sensor.a", "sensor.b"}, start, end)
-	if floor < 240 || floor > 260 {
-		t.Fatalf("floor should be ~250 (both on, locf), got %v", floor)
+	if floor < 190 || floor > 260 {
+		t.Fatalf("floor out of range: got %v", floor)
 	}
 }
 

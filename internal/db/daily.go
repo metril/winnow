@@ -56,6 +56,8 @@ type DailyScreen struct {
 	BandHi       float64         `json:"band_hi"`
 	MinDays      int             `json:"min_days"`
 	Survivors    int             `json:"survivors"`
+	ExcludedDays int             `json:"excluded_days"` // days dropped: reference feed didn't cover them
+	CoverageMin  float64         `json:"coverage_min"`  // per-day coverage threshold applied
 	Rows         []DailyMeterRow `json:"rows"` // passers (best first), then any requested failures
 
 	// verdicts holds a signal for EVERY meter the screen could evaluate (full
@@ -80,8 +82,9 @@ func (s *DailyScreen) PhysicsMap() map[int64]PhysicsSignal {
 }
 
 const (
-	dailyMinDays = 3  // need at least this many full local days to screen
-	dailyMaxDays = 60 // bound the window so the screen stays cheap forever
+	dailyMinDays     = 3    // need at least this many full local days to screen
+	dailyMaxDays     = 60   // bound the window so the screen stays cheap forever
+	dailyCoverageMin = 0.90 // fraction of a day the reference feed must actually cover
 )
 
 // DailyReconciliation runs the physics screen over every (non-ignored) electric
@@ -102,19 +105,34 @@ func (d *DB) DailyReconciliation(ctx context.Context, entities []string, tz stri
 		lo = hi.Add(-dailyMaxDays * 24 * time.Hour)
 	}
 	monitored := d.monitoredDailyKwh(ctx, entities, tz, lo, hi)
+	coverage := d.referenceCoverage(ctx, entities, tz, lo, hi)
 
 	// Full local days: strictly inside the capture span (both edge days are
-	// partial) and with monitored coverage, ascending.
+	// partial), with monitored coverage, ascending. A day the reference feed
+	// didn't genuinely cover is EXCLUDED as evidence — during the June 2026
+	// outage, unbounded gap-fill fabricated 23 identical days that inflated the
+	// monitored average and pushed the real meter out of the magnitude band.
 	firstDay := lo.In(loc).Format("2006-01-02")
 	lastDay := hi.In(loc).Format("2006-01-02")
 	days := make([]string, 0, len(monitored))
+	excluded := 0
 	for day, kwh := range monitored {
-		if day > firstDay && day < lastDay && kwh > 0 {
+		if day <= firstDay || day >= lastDay {
+			continue
+		}
+		// coverage first: a fully-dead day integrates to 0 kWh and would
+		// otherwise vanish without being counted in the outage tally
+		if coverage[day] < dailyCoverageMin {
+			excluded++
+			continue
+		}
+		if kwh > 0 {
 			days = append(days, day)
 		}
 	}
 	sort.Strings(days)
-	screen := &DailyScreen{Days: days, MinDays: dailyMinDays, Rows: []DailyMeterRow{}}
+	screen := &DailyScreen{Days: days, MinDays: dailyMinDays, Rows: []DailyMeterRow{},
+		ExcludedDays: excluded, CoverageMin: dailyCoverageMin}
 	screen.MonitoredKwh = make([]float64, len(days))
 	monAvg := 0.0
 	for i, day := range days {
@@ -337,6 +355,40 @@ FROM meter_index i LEFT JOIN meters m USING (endpoint_id)`)
 		out[id] = m
 	}
 	return out, rows.Err()
+}
+
+// referenceCoverage returns, per local day, the fraction of minutes the
+// bounded gap-fill would actually have data for (a real sample within
+// refCarryLimit). With the worker's 5-minute keepalive a healthy day scores
+// ~1.0; a day the feed was down scores ~0 — even though unbounded locf would
+// happily have fabricated it.
+func (d *DB) referenceCoverage(ctx context.Context, entities []string, tz string, lo, hi time.Time) map[string]float64 {
+	out := map[string]float64{}
+	if len(entities) == 0 {
+		return out
+	}
+	rows, err := d.pool.Query(ctx, `
+WITH per_min AS (
+  SELECT time_bucket_gapfill('1 minute', ts) AS mt, locf(max(ts)) AS src_ts
+  FROM reference_samples
+  WHERE entity_id = ANY($1) AND ts >= $2 AND ts <= $3
+  GROUP BY mt)
+SELECT (mt AT TIME ZONE $4)::date AS day,
+       count(*) FILTER (WHERE mt <= src_ts + interval '`+refCarryLimit+`') / 1440.0
+FROM per_min GROUP BY day ORDER BY day`, entities, lo, hi, tz)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var day time.Time
+		var frac *float64
+		if err := rows.Scan(&day, &frac); err != nil {
+			return out
+		}
+		out[day.Format("2006-01-02")] = deref(frac)
+	}
+	return out
 }
 
 // billDailyBand derives a kWh/day band for the given local calendar month ("06")
