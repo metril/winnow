@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1](https://github.com/metril/winnow/compare/v1.11.0...v1.11.1) (2026-07-04)
+
+
+### Bug Fixes
+
+* **charts:** draw the bill-estimate line in full-contrast ink ([#28](https://github.com/metril/winnow/issues/28)) ([6b4fce8](https://github.com/metril/winnow/commit/6b4fce84a6587d951c57926634e437f1e706b476))
+
 ## [1.11.0](https://github.com/metril/winnow/compare/v1.10.0...v1.11.0) (2026-07-04)
 
 
