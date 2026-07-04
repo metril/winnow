@@ -1,19 +1,23 @@
 import { useState } from "react";
-import { Zap, Square, Play, Trash2, Trophy, ChevronDown, ChevronRight } from "lucide-react";
+import { Zap, Radar, Square, Play, Trash2, Trophy, ChevronDown, ChevronRight } from "lucide-react";
 import { api, TestWindow } from "../api";
 import { useLiveMeta } from "../live";
 import { useFetch } from "../fetch";
 import { shortTs } from "../util";
 import { Page } from "./shell";
-import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, EmptyState, Skeleton, Table, Th, Td, InfoHint } from "../ui";
+import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, EmptyState, Skeleton, Table, Th, Td, InfoHint, Toggle, useToast } from "../ui";
 import { ConfidenceBar } from "./charts";
 
+const HISTORY_SHOWN = 15;
+
 export default function LoadTests() {
-  const { configVersion } = useLiveMeta();
+  // testsVersion bumps over SSE when any window opens/closes — including the
+  // worker's auto-detector — so the page updates the moment one fires.
+  const { configVersion, testsVersion } = useLiveMeta();
   const [label, setLabel] = useState("");
   const [knownW, setKnownW] = useState("");
-  const tests = useFetch(api.tests, [configVersion]);
-  const combined = useFetch(() => api.combined().catch(() => null), [configVersion]);
+  const tests = useFetch(api.tests, [configVersion, testsVersion]);
+  const combined = useFetch(() => api.combined().catch(() => null), [configVersion, testsVersion]);
 
   const list = tests.data || [];
   const running = list.find((t) => !t.end_ts);
@@ -53,6 +57,8 @@ export default function LoadTests() {
         </CardBody>
       </Card>
 
+      <AutoDetectCard tests={list} />
+
       {combined.data?.ranking?.length > 0 && (
         <Card>
           <CardHeader title={<span className="inline-flex items-center gap-2"><Trophy size={16} className="text-gold" /> Combined ranking</span>}
@@ -83,10 +89,65 @@ export default function LoadTests() {
         <CardHeader title="Test history" />
         <CardBody className="space-y-2">
           {!tests.data ? <Skeleton className="h-16" /> : list.length === 0 ? <EmptyState icon={<Zap size={20} />}>No tests yet.</EmptyState>
-            : list.map((t) => <TestRow key={t.id} t={t} onChange={refresh} />)}
+            : <>
+                {list.slice(0, HISTORY_SHOWN).map((t) => <TestRow key={t.id} t={t} onChange={refresh} />)}
+                {list.length > HISTORY_SHOWN && (
+                  <div className="px-1 pt-1 text-micro text-tertiary">… and {list.length - HISTORY_SHOWN} older window{list.length - HISTORY_SHOWN === 1 ? "" : "s"} (all still feed the combined ranking; the analysis uses the 20 most recent)</div>
+                )}
+              </>}
         </CardBody>
       </Card>
     </Page>
+  );
+}
+
+// AutoDetectCard controls the worker's automatic load-change detector: it
+// watches the summed monitored HA power and turns each sharp, sustained change
+// into a mini load test — identification evidence with zero effort.
+function AutoDetectCard({ tests }: { tests: TestWindow[] }) {
+  const toast = useToast();
+  const settings = useFetch(api.settings, []);
+  const [saving, setSaving] = useState(false);
+  const [thr, setThr] = useState<string | null>(null); // null = not edited
+
+  const s = settings.data || {};
+  const on = String(s.auto_window ?? "1") === "1" || String(s.auto_window).toLowerCase() === "true";
+  const threshold = thr ?? String(s.threshold_w ?? "400");
+  const auto = tests.filter((t) => t.source === "auto");
+  const last = auto.find((t) => t.end_ts) || auto[0];
+
+  const save = (body: Record<string, string>) => {
+    setSaving(true);
+    return api.putSettings(body)
+      .then(() => settings.reload())
+      .catch((e) => toast.show(String(e), "bad"))
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <Card>
+      <CardHeader title="Automatic detection" icon={<Radar size={16} />}
+        subtitle="winnow watches your monitored Home-Assistant power; a sharp, sustained change (an appliance kicking in) becomes a mini load test automatically. The observed step doubles as a known load, so every event also calibrates."
+        actions={settings.data && (
+          <Toggle checked={on} onChange={(v) => save({ auto_window: v ? "1" : "0" })} label={on ? "on" : "off"} />
+        )} />
+      <CardBody className="flex flex-wrap items-end gap-x-6 gap-y-3">
+        {on && (
+          <Field label={<>minimum step (W)<InfoHint>The smallest sudden rise that counts as an event. winnow also adapts to your home's noise level automatically — whichever is larger wins, so background jitter never fires it.</InfoHint></>}>
+            <div className="flex items-center gap-2">
+              <Input value={threshold} onChange={(e) => setThr(e.target.value)} className="w-28" inputMode="numeric" />
+              <Button size="sm" disabled={saving || thr == null || thr === String(s.threshold_w ?? "400")}
+                onClick={() => save({ threshold_w: threshold }).then(() => setThr(null))} success="Saved">Save</Button>
+            </div>
+          </Field>
+        )}
+        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 text-small">
+          <span><span className="tabular-nums text-text">{auto.length}</span> <span className="text-tertiary">auto window{auto.length === 1 ? "" : "s"} detected</span></span>
+          {last && <span className="text-tertiary">last: <span className="mono">{shortTs(last.start_ts)}</span></span>}
+          {!on && <span className="text-tertiary">detection is off — windows are only created by manual tests</span>}
+        </div>
+      </CardBody>
+    </Card>
   );
 }
 

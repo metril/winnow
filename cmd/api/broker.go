@@ -60,6 +60,7 @@ func (b *broker) run(ctx context.Context, d *db.DB) {
 		_, _ = conn.Exec(ctx, "LISTEN winnow")
 		_, _ = conn.Exec(ctx, "LISTEN winnow_ref")
 		_, _ = conn.Exec(ctx, "LISTEN winnow_config")
+		_, _ = conn.Exec(ctx, "LISTEN winnow_tests")
 		for ctx.Err() == nil {
 			n, err := conn.Conn().WaitForNotification(ctx)
 			if err != nil {
@@ -75,6 +76,8 @@ func (b *broker) run(ctx context.Context, d *db.DB) {
 				ev = fmt.Sprintf(`{"type":"reference","power":%s}`, n.Payload)
 			case "winnow_config":
 				ev = `{"type":"config"}`
+			case "winnow_tests":
+				ev = `{"type":"tests"}`
 			default:
 				continue
 			}

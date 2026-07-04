@@ -1107,6 +1107,7 @@ func (s *server) handleStartTest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	s.d.NotifyTests(r.Context())
 	writeJSON(w, t)
 }
 
@@ -1124,10 +1125,9 @@ func (s *server) handleStopTest(w http.ResponseWriter, r *http.Request) {
 	// Freeze the data-snooping candidate pool for this window at close time so
 	// re-analyses don't drift as more meters are overheard later. Best-effort.
 	if cfg, cerr := s.d.LoadConfig(r.Context()); cerr == nil {
-		if screen, serr := s.d.DailyReconciliation(r.Context(), cfg.MonitoredEntities, cfg.HATimeZone, nil); serr == nil && screen.Survivors > 0 {
-			_ = s.d.SetTestSnoopK(r.Context(), id, screen.Survivors)
-		}
+		s.d.FreezeTestSnoopK(r.Context(), id, cfg.MonitoredEntities, cfg.HATimeZone)
 	}
+	s.d.NotifyTests(r.Context())
 	writeJSON(w, t)
 }
 
@@ -1141,6 +1141,7 @@ func (s *server) handleDeleteTest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	s.d.NotifyTests(r.Context())
 	writeJSON(w, map[string]any{"ok": true})
 }
 

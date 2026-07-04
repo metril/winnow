@@ -201,3 +201,43 @@ func TestReferenceGapsAndBackfillReplace(t *testing.T) {
 		}
 	}
 }
+
+// TestFreezeTestSnoopK: closing a window pins the snooping pool from the
+// current physics-screen survivor count (shared by manual stop and the
+// worker's auto close, which used to skip it).
+func TestFreezeTestSnoopK(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	ctx := context.Background()
+	if err := d.SetSetting(ctx, config.KeyHATimeZone, "UTC"); err != nil {
+		t.Fatalf("set tz: %v", err)
+	}
+
+	day0 := time.Date(base.Year(), base.Month(), base.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -5)
+	startMin := day0.Sub(base).Minutes()
+	for m := 0; m <= 6*24*60; m += 5 {
+		addRef(t, d, startMin+float64(m), 1250) // 30 kWh/day
+	}
+	cum := 20000.0
+	for h := 0; h <= 6*24; h++ {
+		add(t, d, 6201, startMin+float64(h*60), cum, 4) // 35 kWh/day → survivor
+		cum += 35.0 / 24
+	}
+
+	w, err := d.CreateTest(ctx, "freeze me", time.Now().Add(-10*time.Minute), nil, "auto", nil, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := d.StopTest(ctx, w.ID, time.Now()); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	d.FreezeTestSnoopK(ctx, w.ID, []string{"sensor.plug"}, "UTC")
+
+	var k *int
+	if err := d.Pool().QueryRow(ctx, `SELECT snoop_k FROM test_windows WHERE id=$1`, w.ID).Scan(&k); err != nil {
+		t.Fatalf("read snoop_k: %v", err)
+	}
+	if k == nil || *k < 1 {
+		t.Fatalf("snoop_k not frozen: %v", k)
+	}
+}

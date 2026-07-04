@@ -87,7 +87,7 @@ export default function Settings() {
               {field("auto_window") === "1" && (
                 <div className="mt-3 border-t border-border pt-3">
                   <Field label="Spike threshold" hint="watts above the rolling baseline that opens a window (closes at half this)">
-                    <Input value={field("threshold_w")} onChange={(e) => set("threshold_w", e.target.value)} placeholder="50" className="w-40" inputMode="numeric" />
+                    <Input value={field("threshold_w")} onChange={(e) => set("threshold_w", e.target.value)} placeholder="400" className="w-40" inputMode="numeric" />
                   </Field>
                 </div>
               )}

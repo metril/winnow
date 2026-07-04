@@ -217,8 +217,8 @@ func FromMap(m map[string]string) Config {
 	if port == 0 {
 		port = 1883
 	}
-	thr, _ := strconv.ParseFloat(get(KeyThresholdW, "", "50"), 64)
-	autoWin := get(KeyAutoWindow, "", "0")
+	thr, _ := strconv.ParseFloat(get(KeyThresholdW, "", "400"), 64)
+	autoWin := get(KeyAutoWindow, "", "1")
 	autoOn := autoWin == "1" || strings.EqualFold(autoWin, "true")
 	mult, _ := strconv.ParseFloat(get(KeyDefaultMultiplier, "", "1"), 64)
 	if mult == 0 {
