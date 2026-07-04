@@ -5,7 +5,7 @@ import {
   ButtonHTMLAttributes, InputHTMLAttributes, SelectHTMLAttributes, TextareaHTMLAttributes,
 } from "react";
 import clsx from "clsx";
-import { Check, X, Info, Loader2, ArrowUp, ArrowDown, Minus, HelpCircle } from "lucide-react";
+import { Check, X, Info, Loader2, ArrowUp, ArrowDown, Minus, HelpCircle, AlertTriangle, RotateCcw } from "lucide-react";
 
 export const cx = clsx;
 function errMsg(e: any) { return String(e?.message ?? e ?? "error").replace(/^Error:\s*/, ""); }
@@ -128,6 +128,18 @@ export function CardHeader({ title, subtitle, actions, icon }:
 }
 export function CardBody({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cx("p-5", className)}>{children}</div>;
+}
+
+// FetchError renders a failed load as an actionable state instead of the
+// permanent skeleton / silently-empty card several views used to show.
+export function FetchError({ error, onRetry }: { error: string; onRetry?: () => void }) {
+  return (
+    <div className="flex items-center gap-2.5 rounded-lg border border-bad/30 bg-bad/5 px-3 py-2.5 text-small">
+      <AlertTriangle size={15} className="shrink-0 text-bad" />
+      <span className="min-w-0 flex-1 break-words text-bad">{error}</span>
+      {onRetry && <Button size="sm" variant="ghost" icon={<RotateCcw size={13} />} onClick={onRetry}>Retry</Button>}
+    </div>
+  );
 }
 
 export function Skeleton({ className }: { className?: string }) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"winnow/internal/ert"
@@ -39,7 +40,10 @@ func (d *DB) Leaderboard(ctx context.Context, o LeaderboardOpts) ([]model.Meter,
 
 	// total_movement is the sum of rollover-aware, glitch-filtered hourly deltas —
 	// not max−min, which a single bit-flipped decode (e.g. a +2^17 counter jump)
-	// inflates by orders of magnitude.
+	// inflates by orders of magnitude. The delta ladder reads readings_1h (the
+	// shared basis, which also carries the min-evidence rule that dashes out
+	// briefly-heard meters); packets/first/last stay on readings_1m for minute
+	// fidelity on "last seen".
 	q := `
 WITH win AS (
   SELECT endpoint_id,
@@ -48,20 +52,8 @@ WITH win AS (
          max(bucket) AS last_seen
   FROM readings_1m w
   ` + where + `
-  GROUP BY endpoint_id),
-hb AS (
-  SELECT w.endpoint_id, time_bucket('1 hour', w.bucket) AS hb, max(w.max_c) AS cmax,
-         CASE WHEN mi.msg_type = 'SCM' THEN 16777216.0 ELSE 4294967296.0 END AS modulus
-  FROM readings_1m w JOIN meter_index mi USING (endpoint_id)
-  ` + where + `
-  GROUP BY w.endpoint_id, hb, modulus),
-stepped AS (
-  SELECT endpoint_id, hb, modulus,
-         cmax - lag(cmax) OVER (PARTITION BY endpoint_id ORDER BY hb) AS raw
-  FROM hb),
-m AS (
-  SELECT endpoint_id, hb, ` + rolloverDeltaSQL("raw", "modulus") + ` AS delta
-  FROM stepped),` + glitchCleanCTEs("m", "hb") + `,
+  GROUP BY endpoint_id),` +
+		hourlyDeltaCTEs("TRUE"+strings.ReplaceAll(strings.TrimPrefix(where, "WHERE TRUE"), "w.bucket", "r.bucket")) + `,
 mv AS (SELECT endpoint_id, sum(delta) AS total_movement FROM glitch_clean GROUP BY endpoint_id)
 SELECT win.endpoint_id, i.msg_type, i.endpoint_type,
        win.packets,
@@ -156,6 +148,35 @@ func (d *DB) GetMeter(ctx context.Context, id int64) (model.Meter, error) {
 	m.Publish = publish != nil && *publish
 	if mult != nil {
 		m.PubMultiplier = *mult
+	}
+	return m, nil
+}
+
+// MeterInfo is GetMeter plus the registry metadata (meter_index), so a meter
+// with no packets in the queried window still shows what it is — the detail
+// header used to render empty msg_type/packets for out-of-window meters.
+func (d *DB) MeterInfo(ctx context.Context, id int64) (model.Meter, error) {
+	m, err := d.GetMeter(ctx, id)
+	if err != nil {
+		return m, err
+	}
+	var msgType *string
+	var first, last *time.Time
+	_ = d.pool.QueryRow(ctx, `
+SELECT msg_type, endpoint_type, packets, first_seen, last_seen, last_consumption
+FROM meter_index WHERE endpoint_id = $1`, id).
+		Scan(&msgType, &m.EndpointType, &m.Packets, &first, &last, &m.LatestConsumption)
+	if msgType != nil {
+		m.MsgType = *msgType
+	}
+	if m.EndpointType != nil {
+		m.Commodity = ert.Commodity(m.EndpointType)
+	}
+	if first != nil {
+		m.FirstSeen = first.UTC().Format(time.RFC3339)
+	}
+	if last != nil {
+		m.LastSeen = last.UTC().Format(time.RFC3339)
 	}
 	return m, nil
 }

@@ -144,7 +144,7 @@ func (s *server) handleMeterDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	meter, _ := s.d.GetMeter(r.Context(), id)
+	meter, _ := s.d.MeterInfo(r.Context(), id)
 	writeJSON(w, map[string]any{"endpoint_id": id, "bucket": bucket,
 		"points": series.Points, "deltas": series.Deltas, "annotation": meter})
 }
@@ -708,19 +708,21 @@ func (s *server) handleProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	days := intParam(r, "days", 14)
+	cfg, _ := s.d.LoadConfig(r.Context())
+	tz := cfg.HATimeZone
 	var (
 		out any
 		err error
 	)
 	switch r.URL.Query().Get("type") {
 	case "dow":
-		out, err = s.d.DowProfile(r.Context(), id, days)
+		out, err = s.d.DowProfile(r.Context(), id, days, tz)
 	case "daily":
-		out, err = s.d.DailyRollup(r.Context(), id, days)
+		out, err = s.d.DailyRollup(r.Context(), id, days, tz)
 	case "heatmap":
-		out, err = s.d.Heatmap(r.Context(), id, days)
+		out, err = s.d.Heatmap(r.Context(), id, days, tz)
 	default: // "hod"
-		out, err = s.d.HourlyProfile(r.Context(), id, days)
+		out, err = s.d.HourlyProfile(r.Context(), id, days, tz)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), 500)

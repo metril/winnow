@@ -510,12 +510,20 @@ func TestAnalyticsProfilesAndCoverage(t *testing.T) {
 	defer d.Close()
 	ctx := context.Background()
 	seed(t, d)
+	// The profiles run on hourly deltas (lag over hourly counter maxima with a
+	// ≥3-positive-deltas evidence floor), so one seeded hour isn't enough —
+	// extend meter 1001 forward with a day of steady hourly readings.
+	cum := 20000.0
+	for h := 2; h <= 26; h++ {
+		add(t, d, 1001, float64(h*60), cum, 4)
+		cum += 12
+	}
 
-	hod, err := d.HourlyProfile(ctx, 1001, 7)
+	hod, err := d.HourlyProfile(ctx, 1001, 7, "UTC")
 	if err != nil || len(hod) == 0 {
 		t.Fatalf("hourly profile empty: %v", err)
 	}
-	daily, err := d.DailyRollup(ctx, 1001, 30)
+	daily, err := d.DailyRollup(ctx, 1001, 30, "UTC")
 	if err != nil || len(daily) == 0 {
 		t.Fatalf("daily rollup empty: %v", err)
 	}

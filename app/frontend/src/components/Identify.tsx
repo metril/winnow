@@ -6,8 +6,8 @@ import { useLive } from "../live";
 import { useFetch } from "../fetch";
 import { fmt } from "../util";
 import { Page, View } from "./shell";
-import { Card, CardHeader, CardBody, Button, Segmented, Badge, EmptyState, Skeleton, Table, Th, Td, InfoHint, Input } from "../ui";
-import { OverlayChart, ConfidenceBar } from "./charts";
+import { Card, CardHeader, CardBody, Button, Segmented, Badge, EmptyState, FetchError, Skeleton, Table, Th, Td, InfoHint, Input } from "../ui";
+import { OverlayChart, ConfidenceBar, brushProps } from "./charts";
 import { useChartTheme } from "./chartTheme";
 import { TrackStar, PublishToggle } from "./MeterActions";
 
@@ -41,7 +41,7 @@ export default function Identify({ onNav }: { onNav?: (v: View, p?: (string | nu
   const [commodity, setCommodity] = useState("electric");
   const [selected, setSelected] = useState<number[]>([]); // [] → auto top 3
   const [hidden, setHidden] = useState<Set<string>>(new Set()); // legend-hidden among shown
-  const { data, reload } = useFetch(() => loadAll(hours, bucket, commodity, selected), [hours, bucket, commodity, selected, configVersion]);
+  const { data, error, reload } = useFetch(() => loadAll(hours, bucket, commodity, selected), [hours, bucket, commodity, selected, configVersion]);
 
   const d = data?.d;
   const ranking: CorrRow[] = d?.ranking || [];
@@ -86,6 +86,8 @@ export default function Identify({ onNav }: { onNav?: (v: View, p?: (string | nu
         <Button variant="primary" icon={<Crosshair size={15} />} onClick={reload} success="Analyzed">Analyze</Button>
         <InfoHint>Ranks every meter by a composite <b>confidence</b> that its consumption matches your monitored energy — combining correlation, energy reconciliation, calibration stability, packet adequacy and (across test windows) agreement. Switch a known load on/off first, then Analyze.</InfoHint>
       </>}>
+
+      {error && <FetchError error={error} onRetry={reload} />}
 
       {noSet && (
         <Card variant="alert">
@@ -253,8 +255,7 @@ function DailyScreenCard({ daily, selected, onToggle, cv, onReload }: {
                 dot={{ r: 2 }} activeDot={{ r: 4 }} isAnimationActive={false} connectNulls />
             ))}
             {dataRows.length > 60 &&
-              <Brush dataKey="t" height={22} stroke={ch.brand} fill={ch.empty} travellerWidth={8}
-                startIndex={dayStart} tickFormatter={() => ""} />}
+              <Brush dataKey="t" {...brushProps(ch)} startIndex={dayStart} />}
           </LineChart>
         </ResponsiveContainer>
         <div className="mt-1 text-micro text-tertiary">

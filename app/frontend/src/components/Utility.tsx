@@ -6,6 +6,7 @@ import { useLive } from "../live";
 import { fmt } from "../util";
 import { Page, View } from "./shell";
 import { Card, CardHeader, CardBody, StatCard, Badge, Button, EmptyState, Skeleton, InfoHint } from "../ui";
+import { brushProps } from "./charts";
 import { useChartTheme } from "./chartTheme";
 
 // granularityNote explains what the auto-resolved period means.
@@ -112,8 +113,7 @@ export default function Utility({ onNav }: { onNav: (v: View) => void }) {
                   <Bar name="billed" dataKey="bill" fill={ch.gold} radius={[3, 3, 0, 0]} isAnimationActive={false} />
                   {hasMeter && <Bar name="winnow meter" dataKey="meter" fill={ch.brand} radius={[3, 3, 0, 0]} isAnimationActive={false} />}
                   {data.length > winSize &&
-                    <Brush dataKey="t" height={22} stroke={ch.brand} fill={ch.empty} travellerWidth={8}
-                      startIndex={billStart} tickFormatter={() => ""} />}
+                    <Brush dataKey="t" {...brushProps(ch)} startIndex={billStart} />}
                 </BarChart>
               </ResponsiveContainer>}
         </CardBody>
@@ -138,8 +138,7 @@ export default function Utility({ onNav }: { onNav: (v: View) => void }) {
                 {hasDayMeter && <Line name="winnow meter" dataKey="meter" stroke={ch.brand} strokeWidth={2}
                   dot={{ r: 2 }} activeDot={{ r: 4 }} isAnimationActive={false} connectNulls />}
                 {days.length > 60 &&
-                  <Brush dataKey="t" height={22} stroke={ch.brand} fill={ch.empty} travellerWidth={8}
-                    startIndex={dayStart} tickFormatter={() => ""} />}
+                  <Brush dataKey="t" {...brushProps(ch)} startIndex={dayStart} />}
               </LineChart>
             </ResponsiveContainer>
           </CardBody>

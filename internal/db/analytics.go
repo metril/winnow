@@ -7,33 +7,43 @@ import (
 	"winnow/internal/ert"
 )
 
-// --- usage profiles (per meter, over readings_1m) ---------------------------
+// --- usage profiles (per meter, glitch/rollover-aware hourly deltas) --------
+//
+// Every chart here used to read naive max−min off readings_1m: one bit-flipped
+// decode (+2^17 counts) inflated today's kWh, the daily bars, the heatmap and
+// the peer benchmark by orders of magnitude, and hours/days were keyed in UTC
+// while the rest of the app uses HA's calendar. All of them now share the
+// hourly-delta basis (rollover-aware, glitch-filtered, min-evidence) keyed in
+// the user's timezone.
 
-// ProfilePoint is one bucketed average per-minute consumption delta.
+// ProfilePoint is one bucketed average hourly consumption delta.
 type ProfilePoint struct {
 	Key   int     `json:"key"`   // hour-of-day (0-23) or day-of-week (0-6)
-	Value float64 `json:"value"` // avg per-minute delta
+	Value float64 `json:"value"` // avg per-hour delta (raw counter units)
 }
 
-// HourlyProfile returns the average per-minute consumption by hour-of-day.
-func (d *DB) HourlyProfile(ctx context.Context, id int64, days int) ([]ProfilePoint, error) {
-	return d.profile(ctx, `extract(hour from bucket)::int`, id, days)
+// HourlyProfile returns the average hourly consumption by local hour-of-day.
+func (d *DB) HourlyProfile(ctx context.Context, id int64, days int, tz string) ([]ProfilePoint, error) {
+	return d.profile(ctx, `extract(hour from hb AT TIME ZONE $3)::int`, id, days, tz)
 }
 
-// DowProfile returns the average per-minute consumption by day-of-week (0=Sun).
-func (d *DB) DowProfile(ctx context.Context, id int64, days int) ([]ProfilePoint, error) {
-	return d.profile(ctx, `extract(dow from bucket)::int`, id, days)
+// DowProfile returns the average hourly consumption by local day-of-week (0=Sun).
+func (d *DB) DowProfile(ctx context.Context, id int64, days int, tz string) ([]ProfilePoint, error) {
+	return d.profile(ctx, `extract(dow from hb AT TIME ZONE $3)::int`, id, days, tz)
 }
 
-func (d *DB) profile(ctx context.Context, keyExpr string, id int64, days int) ([]ProfilePoint, error) {
+func (d *DB) profile(ctx context.Context, keyExpr string, id int64, days int, tz string) ([]ProfilePoint, error) {
 	if days <= 0 {
 		days = 7
 	}
+	if tz == "" {
+		tz = "UTC"
+	}
 	rows, err := d.pool.Query(ctx, `
-SELECT `+keyExpr+` AS k, avg(max_c - min_c) AS v
-FROM readings_1m
-WHERE endpoint_id = $1 AND bucket >= now() - make_interval(days => $2)
-GROUP BY k ORDER BY k`, id, days)
+WITH `+hourlyDeltaCTEs("r.endpoint_id = $1 AND r.bucket >= now() - make_interval(days => $2)")+`
+SELECT `+keyExpr+` AS k, avg(delta) AS v
+FROM glitch_clean
+GROUP BY k ORDER BY k`, id, days, tz)
 	if err != nil {
 		return nil, err
 	}
@@ -58,18 +68,21 @@ type HeatCell struct {
 	Value float64 `json:"value"`
 }
 
-// Heatmap returns the hour×day-of-week consumption grid for one meter.
-func (d *DB) Heatmap(ctx context.Context, id int64, days int) ([]HeatCell, error) {
+// Heatmap returns the local hour×day-of-week consumption grid for one meter.
+func (d *DB) Heatmap(ctx context.Context, id int64, days int, tz string) ([]HeatCell, error) {
 	if days <= 0 {
 		days = 14
 	}
+	if tz == "" {
+		tz = "UTC"
+	}
 	rows, err := d.pool.Query(ctx, `
-SELECT extract(dow from bucket)::int AS dow,
-       extract(hour from bucket)::int AS hour,
-       avg(max_c - min_c) AS v
-FROM readings_1m
-WHERE endpoint_id = $1 AND bucket >= now() - make_interval(days => $2)
-GROUP BY dow, hour`, id, days)
+WITH `+hourlyDeltaCTEs("r.endpoint_id = $1 AND r.bucket >= now() - make_interval(days => $2)")+`
+SELECT extract(dow from hb AT TIME ZONE $3)::int AS dow,
+       extract(hour from hb AT TIME ZONE $3)::int AS hour,
+       avg(delta) AS v
+FROM glitch_clean
+GROUP BY dow, hour`, id, days, tz)
 	if err != nil {
 		return nil, err
 	}
@@ -93,39 +106,39 @@ type DailyPoint struct {
 	Value float64 `json:"value"`
 }
 
-// DailyRollup returns per-day consumption (max-min) for one meter.
-func (d *DB) DailyRollup(ctx context.Context, id int64, days int) ([]DailyPoint, error) {
+// DailyRollup returns per-local-day consumption (glitch-filtered delta sums).
+func (d *DB) DailyRollup(ctx context.Context, id int64, days int, tz string) ([]DailyPoint, error) {
 	if days <= 0 {
 		days = 30
 	}
+	if tz == "" {
+		tz = "UTC"
+	}
 	rows, err := d.pool.Query(ctx, `
-SELECT time_bucket('1 day', bucket) AS day, max(max_c) - min(min_c) AS v
-FROM readings_1m
-WHERE endpoint_id = $1 AND bucket >= now() - make_interval(days => $2)
-GROUP BY day ORDER BY day`, id, days)
+WITH `+hourlyDeltaCTEs("r.endpoint_id = $1 AND r.bucket >= now() - make_interval(days => $2)")+`
+SELECT to_char(hb AT TIME ZONE $3, 'YYYY-MM-DD') AS day, sum(delta) AS v
+FROM glitch_clean
+GROUP BY day ORDER BY day`, id, days, tz)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []DailyPoint{}
 	for rows.Next() {
-		var t time.Time
+		var day string
 		var v *float64
-		if err := rows.Scan(&t, &v); err != nil {
+		if err := rows.Scan(&day, &v); err != nil {
 			return nil, err
 		}
-		out = append(out, DailyPoint{Day: t.UTC().Format("2006-01-02"), Value: round(deref(v), 2)})
+		out = append(out, DailyPoint{Day: day, Value: round(deref(v), 2)})
 	}
 	return out, rows.Err()
 }
 
-// MovementSince returns a meter's consumption movement (max-min) since a time.
+// MovementSince returns a meter's consumption movement since a time — on the
+// same honest basis as everything else (MovementBetween).
 func (d *DB) MovementSince(ctx context.Context, id int64, since time.Time) float64 {
-	var v *float64
-	_ = d.pool.QueryRow(ctx,
-		`SELECT max(max_c) - min(min_c) FROM readings_1m WHERE endpoint_id=$1 AND bucket >= $2`,
-		id, since).Scan(&v)
-	return deref(v)
+	return deref(d.MovementBetween(ctx, id, since, time.Now()))
 }
 
 // --- benchmarking (vs neighbours) -------------------------------------------
@@ -150,13 +163,11 @@ func (d *DB) BenchmarkMeter(ctx context.Context, id int64, days int) (Benchmark,
 	}
 	b := Benchmark{EndpointID: id, Days: days}
 	rows, err := d.pool.Query(ctx, `
-SELECT i.endpoint_id, i.endpoint_type, COALESCE(w.movement, 0) AS movement
+WITH `+hourlyDeltaCTEs("r.bucket >= now() - make_interval(days => $1)")+`,
+mv AS (SELECT endpoint_id, sum(delta) AS movement FROM glitch_clean GROUP BY endpoint_id)
+SELECT i.endpoint_id, i.endpoint_type, COALESCE(mv.movement, 0) AS movement
 FROM meter_index i
-LEFT JOIN (
-  SELECT endpoint_id, max(max_c) - min(min_c) AS movement
-  FROM readings_1m WHERE bucket >= now() - make_interval(days => $1)
-  GROUP BY endpoint_id
-) w ON w.endpoint_id = i.endpoint_id`, days)
+LEFT JOIN mv ON mv.endpoint_id = i.endpoint_id`, days)
 	if err != nil {
 		return b, err
 	}
