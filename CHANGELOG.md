@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.12.0](https://github.com/metril/winnow/compare/v1.11.1...v1.12.0) (2026-07-04)
+
+
+### Features
+
+* **autowindow:** detect sharp load changes automatically, on by default ([#32](https://github.com/metril/winnow/issues/32)) ([48818a8](https://github.com/metril/winnow/commit/48818a8bca55663abefe4e8639778116475303dc))
+
+
+### Bug Fixes
+
+* **loadtests:** align the start-test form on one baseline ([#30](https://github.com/metril/winnow/issues/30)) ([dacbc92](https://github.com/metril/winnow/commit/dacbc927c42b4c3fcfb65aac90c00b140ff243d4))
+
 ## [1.11.1](https://github.com/metril/winnow/compare/v1.11.0...v1.11.1) (2026-07-04)
 
 
