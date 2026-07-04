@@ -206,6 +206,13 @@ func (d *DB) NotifyConfig(ctx context.Context) error {
 	return err
 }
 
+// NotifyTests signals SSE listeners that the test-window list changed (a window
+// opened, closed or was deleted — manual or auto), so the Load Tests page
+// refreshes the moment the worker's detector fires, without polling.
+func (d *DB) NotifyTests(ctx context.Context) {
+	_, _ = d.pool.Exec(ctx, `SELECT pg_notify('winnow_tests', '')`)
+}
+
 // NotifyReference pushes a live plug power sample to listeners (for the SSE
 // overlay). Payload is the power value as a string.
 func (d *DB) NotifyReference(ctx context.Context, power float64) {

@@ -24,10 +24,11 @@ interface LiveFast {
 export interface LiveMeta {
   configVersion: number; // bumps on a `config` SSE event
   agentVersion: number;  // bumps on an `agent` SSE event (pending/connect)
+  testsVersion: number;  // bumps on a `tests` SSE event (a test window opened/closed)
 }
 
 const FastCtx = createContext<LiveFast>({ power: null, powerHistory: [], readings: [], connectedAt: 0 });
-const MetaCtx = createContext<LiveMeta>({ configVersion: 0, agentVersion: 0 });
+const MetaCtx = createContext<LiveMeta>({ configVersion: 0, agentVersion: 0, testsVersion: 0 });
 
 // useLiveMeta: config/agent counters only — safe for chart pages.
 export const useLiveMeta = () => useContext(MetaCtx);
@@ -47,6 +48,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   const [readings, setReadings] = useState<ReadingSample[]>([]);
   const [configVersion, setConfigVersion] = useState(0);
   const [agentVersion, setAgentVersion] = useState(0);
+  const [testsVersion, setTestsVersion] = useState(0);
   const [connectedAt] = useState(() => Date.now());
 
   // coalesce bursts of reading events into one commit per animation frame
@@ -73,12 +75,14 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       setConfigVersion((c) => c + 1);
     } else if (e.type === "agent") {
       setAgentVersion((c) => c + 1);
+    } else if (e.type === "tests") {
+      setTestsVersion((c) => c + 1);
     }
   });
 
   useEffect(() => () => { if (raf.current) cancelAnimationFrame(raf.current); }, []);
 
-  const meta = useMemo(() => ({ configVersion, agentVersion }), [configVersion, agentVersion]);
+  const meta = useMemo(() => ({ configVersion, agentVersion, testsVersion }), [configVersion, agentVersion, testsVersion]);
   const fast = useMemo(() => ({ power, powerHistory, readings, connectedAt }),
     [power, powerHistory, readings, connectedAt]);
   return (

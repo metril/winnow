@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"strconv"
@@ -41,6 +42,7 @@ type worker struct {
 type autoState struct {
 	inited       bool
 	baseline     float64   // rolling estimate of idle (always-on) power, W
+	dev          float64   // rolling |power − baseline| (noise floor for the adaptive threshold)
 	open         bool      // an auto window is currently open
 	openID       int64     // its test_windows id
 	openedAt     time.Time // when it opened (for the max-duration cap)
@@ -633,19 +635,62 @@ func unitFactor(kind, unit string) float64 {
 	}
 }
 
-// auto-window detector tuning. The window opens on a sustained rise of openDelta
-// watts above the rolling baseline and closes on a fall back toward it (hysteresis),
-// with a hard duration cap and a cooldown so it can never run forever.
+// auto-window detector tuning. The window opens on a sustained rise above the
+// rolling baseline and closes on a fall back toward it (hysteresis), with a hard
+// duration cap and a cooldown so it can never run forever. The open threshold is
+// noise-adaptive: on a home whose monitored load carries hundreds of watts of
+// server jitter, a fixed threshold either never fires or fires constantly.
 const (
 	autoMaxDuration = 15 * time.Minute
+	autoMinDuration = 3 * time.Minute // shorter = a blip, not evidence: discard
 	autoCooldown    = 5 * time.Minute
 	autoBaselineA   = 0.02 // EWMA weight for the idle-power baseline
+	autoDevA        = 0.05 // EWMA weight for the noise (|power−baseline|) tracker
 )
+
+// autoAction is what the detector wants done after one sample.
+type autoAction int
+
+const (
+	autoNone autoAction = iota
+	autoOpen
+	autoClose
+	autoDiscard // close AND delete: too short to be evidence
+)
+
+// autoDecide advances the detector state for one summed-power sample and returns
+// the action. Pure (mutates only aw, never the DB), so the whole open/close
+// policy is unit-testable:
+//   - open when power ≥ baseline + max(openDelta, 3×noise) after the cooldown;
+//   - close when power < baseline + max(openDelta/2, 1.5×noise) or at the cap;
+//   - a close within autoMinDuration is a discard.
+func autoDecide(aw *autoState, power, openDelta float64, now time.Time) autoAction {
+	if openDelta <= 0 {
+		openDelta = 400
+	}
+	if !aw.open {
+		// track baseline + noise only while closed, so the spike itself can't
+		// drag the baseline up and mask the close
+		aw.dev = aw.dev*(1-autoDevA) + math.Abs(power-aw.baseline)*autoDevA
+		aw.baseline = aw.baseline*(1-autoBaselineA) + power*autoBaselineA
+		if power >= aw.baseline+math.Max(openDelta, 3*aw.dev) && now.Sub(aw.lastClosedAt) >= autoCooldown {
+			return autoOpen
+		}
+		return autoNone
+	}
+	if power < aw.baseline+math.Max(openDelta*0.5, 1.5*aw.dev) || now.Sub(aw.openedAt) >= autoMaxDuration {
+		if now.Sub(aw.openedAt) < autoMinDuration {
+			return autoDiscard
+		}
+		return autoClose
+	}
+	return autoNone
+}
 
 // autoWindow runs the baseline-relative auto-window state machine. It's invoked on
 // every monitored-power sample with the summed power, the open delta (watts above
-// baseline, from threshold_w), and whether the opt-in feature is enabled. Called
-// only from the single-threaded HA callback, so w.aw needs no locking.
+// baseline, from threshold_w), and whether the feature is enabled (default on).
+// Called only from the single-threaded HA callback, so w.aw needs no locking.
 func (w *worker) autoWindow(ctx context.Context, power, openDelta float64, on bool) {
 	now := time.Now().UTC()
 	if !w.aw.inited {
@@ -663,38 +708,40 @@ func (w *worker) autoWindow(ctx context.Context, power, openDelta float64, on bo
 	}
 
 	if !on {
-		// feature disabled (the default): self-heal any window left open
+		// feature disabled: self-heal any window left open
 		if w.aw.open {
 			_, _ = w.d.StopTest(ctx, w.aw.openID, now)
 			w.aw.open, w.aw.lastClosedAt = false, now
+			w.d.NotifyTests(ctx)
 			log.Printf("[worker] auto window closed (feature off)")
 		}
 		return
 	}
 
-	if openDelta <= 0 {
-		openDelta = 50
-	}
-	closeDelta := openDelta * 0.5
-
-	if !w.aw.open {
-		// track the idle baseline only while no window is open, so the spike itself
-		// doesn't drag the baseline up and mask the close.
-		w.aw.baseline = w.aw.baseline*(1-autoBaselineA) + power*autoBaselineA
-		if power >= w.aw.baseline+openDelta && now.Sub(w.aw.lastClosedAt) >= autoCooldown {
-			if t, err := w.d.CreateTest(ctx, "auto load "+now.Format("15:04"), now, nil, "auto", nil, nil); err == nil {
-				w.aw.open, w.aw.openID, w.aw.openedAt = true, t.ID, now
-				log.Printf("[worker] auto window opened (%.0fW ≥ baseline %.0f + %.0f)", power, w.aw.baseline, openDelta)
-			}
+	switch autoDecide(&w.aw, power, openDelta, now) {
+	case autoOpen:
+		// the observed step IS the known load — it gives the window the direct
+		// calibration anchor manual tests get from a typed-in wattage
+		step := math.Round(power - w.aw.baseline)
+		if t, err := w.d.CreateTest(ctx, "auto load "+now.Format("15:04"), now, nil, "auto", &step, nil); err == nil {
+			w.aw.open, w.aw.openID, w.aw.openedAt = true, t.ID, now
+			w.d.NotifyTests(ctx)
+			log.Printf("[worker] auto window opened (%.0fW ≥ baseline %.0f, step %.0fW)", power, w.aw.baseline, step)
 		}
-		return
-	}
-
-	// open: close on fall-back (hysteresis) or the hard duration cap
-	if power < w.aw.baseline+closeDelta || now.Sub(w.aw.openedAt) >= autoMaxDuration {
+	case autoClose:
 		_, _ = w.d.StopTest(ctx, w.aw.openID, now)
+		w.mu.RLock()
+		cfg := w.cfg
+		w.mu.RUnlock()
+		w.d.FreezeTestSnoopK(ctx, w.aw.openID, cfg.MonitoredEntities, cfg.HATimeZone)
 		w.aw.open, w.aw.lastClosedAt = false, now
+		w.d.NotifyTests(ctx)
 		log.Printf("[worker] auto window closed (%.0fW, after %s)", power, now.Sub(w.aw.openedAt).Round(time.Second))
+	case autoDiscard:
+		_ = w.d.DeleteTest(ctx, w.aw.openID)
+		w.aw.open, w.aw.lastClosedAt = false, now
+		w.d.NotifyTests(ctx)
+		log.Printf("[worker] auto window discarded (blip, %s < %s)", now.Sub(w.aw.openedAt).Round(time.Second), autoMinDuration)
 	}
 }
 

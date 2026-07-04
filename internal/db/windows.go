@@ -44,6 +44,18 @@ func (d *DB) SetTestSnoopK(ctx context.Context, id int64, k int) error {
 	return err
 }
 
+// FreezeTestSnoopK pins a just-closed window's snooping pool from the CURRENT
+// physics-screen survivor count. Shared by the manual stop handler and the
+// worker's auto-window close — auto windows used to skip this, drifting exactly
+// the way snoop_k was added to prevent. Best-effort; the screen is memoized.
+func (d *DB) FreezeTestSnoopK(ctx context.Context, id int64, entities []string, tz string) {
+	screen, err := d.DailyReconciliation(ctx, entities, tz, nil)
+	if err != nil || screen == nil || screen.Survivors == 0 {
+		return
+	}
+	_ = d.SetTestSnoopK(ctx, id, screen.Survivors)
+}
+
 func scanTest(row interface {
 	Scan(...any) error
 }) (model.TestWindow, error) {
