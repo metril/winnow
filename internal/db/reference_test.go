@@ -145,3 +145,59 @@ func TestReferenceHealth(t *testing.T) {
 		t.Fatalf("expected the multi-day hole in gaps_7d")
 	}
 }
+
+// TestReferenceGapsAndBackfillReplace covers the backfill contract: gap
+// detection (incl. the trailing hole) and idempotent replacement that never
+// touches live rows.
+func TestReferenceGapsAndBackfillReplace(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	ctx := context.Background()
+
+	// live: minutes 0–60, then dead until minute 240, live 240–300
+	for m := 0; m <= 60; m += 5 {
+		addRef(t, d, float64(m), 1000)
+	}
+	for m := 240; m <= 300; m += 5 {
+		addRef(t, d, float64(m), 1100)
+	}
+	capEnd := time.Now()
+	gaps := d.ReferenceGaps(ctx, []string{"sensor.plug"}, 30*24*time.Hour, 30*time.Minute, capEnd)
+	if len(gaps) < 2 {
+		t.Fatalf("gaps = %d, want ≥2 (middle hole + trailing hole to now): %v", len(gaps), gaps)
+	}
+	mid := gaps[0]
+	if mid[1].Sub(mid[0]) < 170*time.Minute {
+		t.Fatalf("middle gap too small: %v..%v", mid[0], mid[1])
+	}
+
+	// backfill the middle gap at 5-min density, twice — row count must not grow
+	var ts []time.Time
+	var pw []float64
+	for x := mid[0].Add(5 * time.Minute); x.Before(mid[1]); x = x.Add(5 * time.Minute) {
+		ts = append(ts, x)
+		pw = append(pw, 950)
+	}
+	for i := 0; i < 2; i++ {
+		if err := d.ReplaceBackfillSamples(ctx, "sensor.plug", mid[0], mid[1], ts, pw); err != nil {
+			t.Fatalf("replace: %v", err)
+		}
+	}
+	var nBack, nLive int
+	_ = d.pool.QueryRow(ctx, `SELECT count(*) FROM reference_samples WHERE src='lts_backfill'`).Scan(&nBack)
+	_ = d.pool.QueryRow(ctx, `SELECT count(*) FROM reference_samples WHERE src='live'`).Scan(&nLive)
+	if nBack != len(ts) {
+		t.Fatalf("backfill rows = %d, want %d (idempotent replace)", nBack, len(ts))
+	}
+	if nLive != 13+13 {
+		t.Fatalf("live rows = %d, want 26 — backfill must never touch live", nLive)
+	}
+
+	// the middle gap is now healed: only the trailing hole remains
+	gaps = d.ReferenceGaps(ctx, []string{"sensor.plug"}, 30*24*time.Hour, 30*time.Minute, capEnd)
+	for _, g := range gaps {
+		if g[0].Before(mid[1]) && g[1].After(mid[0]) && g[1] != capEnd {
+			t.Fatalf("middle gap still present after backfill: %v", g)
+		}
+	}
+}
