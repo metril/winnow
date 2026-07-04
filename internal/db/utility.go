@@ -111,7 +111,7 @@ hourly AS (
          time_bucket('1 hour', r.bucket) AS h,
          max(r.max_c) AS cmax,
          CASE WHEN mi.msg_type='SCM' THEN 16777216.0 ELSE 4294967296.0 END AS modulus
-  FROM readings_1m r
+  FROM readings_1h r
   JOIN meter_index mi USING (endpoint_id)
   WHERE r.bucket >= (SELECT lo FROM span) AND r.bucket < (SELECT hi FROM span)
   GROUP BY r.endpoint_id, h, modulus),
@@ -330,7 +330,7 @@ pm AS (
 hourly AS (
   SELECT r.endpoint_id, time_bucket('1 hour', r.bucket) AS h,
          max(r.max_c) AS cmax, pm.modulus, pm.mult
-  FROM readings_1m r JOIN pm ON pm.endpoint_id = r.endpoint_id
+  FROM readings_1h r JOIN pm ON pm.endpoint_id = r.endpoint_id
   WHERE r.bucket >= (SELECT lo FROM span) AND r.bucket < (SELECT hi FROM span)
   GROUP BY r.endpoint_id, h, pm.modulus, pm.mult),
 stepped AS (
@@ -477,7 +477,7 @@ mday AS (
   SELECT (r.bucket AT TIME ZONE $3)::date AS day,
          max(r.max_c) AS cmax,
          CASE WHEN mi.msg_type='SCM' THEN 16777216.0 ELSE 4294967296.0 END AS modulus
-  FROM readings_1m r JOIN meter_index mi USING (endpoint_id)
+  FROM readings_1h r JOIN meter_index mi USING (endpoint_id)
   WHERE r.endpoint_id=$2
   GROUP BY day, modulus),
 mstep AS (
@@ -572,7 +572,7 @@ pm AS (
 mday AS (
   SELECT r.endpoint_id, (r.bucket AT TIME ZONE $2)::date AS day,
          max(r.max_c) AS cmax, pm.modulus, pm.mult
-  FROM readings_1m r JOIN pm ON pm.endpoint_id = r.endpoint_id
+  FROM readings_1h r JOIN pm ON pm.endpoint_id = r.endpoint_id
   GROUP BY r.endpoint_id, day, pm.modulus, pm.mult),
 mstep AS (
   SELECT endpoint_id, day, modulus, mult,

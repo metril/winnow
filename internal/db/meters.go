@@ -265,8 +265,14 @@ type MeterUpdate struct {
 
 // MetersForPublish returns meters flagged publish=true with their pub config.
 func (d *DB) MetersForPublish(ctx context.Context) ([]model.Meter, error) {
-	rows, err := d.pool.Query(ctx,
-		`SELECT endpoint_id, pub_name, pub_multiplier, pub_unit FROM meters WHERE publish = TRUE`)
+	// discovery metadata comes from meter_index (maintained on ingest) — this
+	// used to run one raw-readings scan per published meter, over compressed
+	// chunks, on every /api/overview and worker publish-set refresh
+	rows, err := d.pool.Query(ctx, `
+SELECT m.endpoint_id, m.pub_name, m.pub_multiplier, m.pub_unit,
+       coalesce(i.msg_type, ''), i.endpoint_type
+FROM meters m LEFT JOIN meter_index i USING (endpoint_id)
+WHERE m.publish = TRUE`)
 	if err != nil {
 		return nil, err
 	}
@@ -275,16 +281,12 @@ func (d *DB) MetersForPublish(ctx context.Context) ([]model.Meter, error) {
 	for rows.Next() {
 		m := model.Meter{Publish: true, PubMultiplier: 1}
 		var mult *float64
-		if err := rows.Scan(&m.EndpointID, &m.PubName, &mult, &m.PubUnit); err != nil {
+		if err := rows.Scan(&m.EndpointID, &m.PubName, &mult, &m.PubUnit, &m.MsgType, &m.EndpointType); err != nil {
 			return nil, err
 		}
 		if mult != nil {
 			m.PubMultiplier = *mult
 		}
-		// fill msg_type + endpoint_type/commodity for discovery metadata
-		_ = d.pool.QueryRow(ctx,
-			`SELECT msg_type, endpoint_type FROM readings WHERE endpoint_id=$1 AND msg_type IS NOT NULL ORDER BY ts DESC LIMIT 1`,
-			m.EndpointID).Scan(&m.MsgType, &m.EndpointType)
 		m.Commodity = ert.Commodity(m.EndpointType)
 		out = append(out, m)
 	}

@@ -64,33 +64,33 @@ type CorrRow struct {
 	EndpointID    int64    `json:"endpoint_id"`
 	Commodity     string   `json:"commodity"`
 	MsgType       string   `json:"msg_type"`
-	EndpointType  *int     `json:"endpoint_type"`
-	R             *float64 `json:"r"`     // Pearson correlation vs reference (nil if N/A)
+	EndpointType  *int     `json:"endpoint_type,omitempty"`
+	R             *float64 `json:"r,omitempty"`     // Pearson correlation vs reference (nil if N/A)
 	Score         float64  `json:"score"` // rate-ratio score
-	WindowDelta   float64  `json:"window_delta"`
-	WindowRate    float64  `json:"window_rate"`
-	BaselineRate  float64  `json:"baseline_rate"`
+	WindowDelta   float64  `json:"window_delta,omitempty"`
+	WindowRate    float64  `json:"window_rate,omitempty"`
+	BaselineRate  float64  `json:"baseline_rate,omitempty"`
 	WindowPackets int64    `json:"window_packets"`
-	PlugEnergyWh  *float64 `json:"plug_energy_wh"` // ground-truth energy over the window
+	PlugEnergyWh  *float64 `json:"plug_energy_wh,omitempty"` // ground-truth energy over the window
 	// regression of the meter's per-bucket energy delta vs aggregate monitored energy:
-	R2                  *float64 `json:"r2"`
-	Slope               *float64 `json:"slope"`                // meter-units per Wh (Deming)
-	BaselineW           *float64 `json:"baseline_w"`           // unmonitored baseline (intercept)
-	SuggestedMultiplier *float64 `json:"suggested_multiplier"` // kWh per meter-unit (regression)
-	AnchorMultiplier    *float64 `json:"anchor_multiplier"`    // kWh per meter-unit (known-load anchor)
-	UtilityMultiplier   *float64 `json:"utility_multiplier"`   // kWh per meter-unit (utility-bill anchor)
-	MeterEnergyKwh      *float64 `json:"meter_energy_kwh"`     // candidate energy over window at suggested calibration
-	FloorOK             *bool    `json:"floor_ok"`             // calibrated min ≥ monitored floor
-	LagBuckets          *int     `json:"lag_buckets"`          // best meter-vs-reference lag (buckets)
+	R2                  *float64 `json:"r2,omitempty"`
+	Slope               *float64 `json:"slope,omitempty"`                // meter-units per Wh (Deming)
+	BaselineW           *float64 `json:"baseline_w,omitempty"`           // unmonitored baseline (intercept)
+	SuggestedMultiplier *float64 `json:"suggested_multiplier,omitempty"` // kWh per meter-unit (regression)
+	AnchorMultiplier    *float64 `json:"anchor_multiplier,omitempty"`    // kWh per meter-unit (known-load anchor)
+	UtilityMultiplier   *float64 `json:"utility_multiplier,omitempty"`   // kWh per meter-unit (utility-bill anchor)
+	MeterEnergyKwh      *float64 `json:"meter_energy_kwh,omitempty"`     // candidate energy over window at suggested calibration
+	FloorOK             *bool    `json:"floor_ok,omitempty"`             // calibrated min ≥ monitored floor
+	LagBuckets          *int     `json:"lag_buckets,omitempty"`          // best meter-vs-reference lag (buckets)
 	// composite identification confidence (0..1) and its component breakdown:
-	Confidence      *float64           `json:"confidence"`
+	Confidence      *float64           `json:"confidence,omitempty"`
 	ConfidenceParts map[string]float64 `json:"confidence_parts,omitempty"`
 	// current applied calibration (so the UI can show current vs suggested vs anchor):
 	PubMultiplier float64 `json:"pub_multiplier"`
-	PubUnit       *string `json:"pub_unit"`
+	PubUnit       *string `json:"pub_unit,omitempty"`
 	// annotations (so the ranking can show/toggle tracked & published state)
-	IsMine  bool `json:"is_mine"`
-	Publish bool `json:"publish"`
+	IsMine  bool `json:"is_mine,omitempty"`
+	Publish bool `json:"publish,omitempty"`
 }
 
 // UtilityComparePoint is one period bucket aligning the meter's metered energy

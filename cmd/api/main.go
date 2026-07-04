@@ -4,6 +4,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"embed"
@@ -11,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"winnow/internal/agentwire"
@@ -54,7 +56,7 @@ func main() {
 	if p := os.Getenv("PORT"); p != "" {
 		addr = ":" + p
 	}
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: addr, Handler: gzipMiddleware(mux), ReadHeaderTimeout: 10 * time.Second}
 
 	// Optional outer TLS listener for remote agents (defense-in-depth; the agent
 	// payload is already app-layer-encrypted). Same mux, so a future reverse proxy
@@ -91,6 +93,39 @@ func mustDB(ctx context.Context) *db.DB {
 	}
 	log.Fatal("[api] database unreachable")
 	return nil
+}
+
+// gzipMiddleware compresses responses for clients that accept it — the identify
+// payload alone is >1MB of repetitive JSON (~10× smaller gzipped). Exempt: SSE
+// (flushed events must not sit in a compressor buffer) and the agent WebSocket
+// (needs Hijack).
+func gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") ||
+			r.URL.Path == "/api/stream" || strings.HasPrefix(r.URL.Path, "/api/agent/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Add("Vary", "Accept-Encoding")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		next.ServeHTTP(&gzipWriter{ResponseWriter: w, gz: gz}, r)
+	})
+}
+
+type gzipWriter struct {
+	http.ResponseWriter
+	gz *gzip.Writer
+}
+
+func (g *gzipWriter) Write(b []byte) (int, error) { return g.gz.Write(b) }
+
+// WriteHeader drops Content-Length: the FileServer sets the uncompressed size,
+// which no longer matches what goes over the wire.
+func (g *gzipWriter) WriteHeader(code int) {
+	g.Header().Del("Content-Length")
+	g.ResponseWriter.WriteHeader(code)
 }
 
 func (s *server) routes(mux *http.ServeMux) {
