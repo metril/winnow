@@ -29,6 +29,7 @@ type worker struct {
 	mu         sync.RWMutex
 	cfg        config.Config
 	publishSet map[int64]model.Meter // meters to publish, by id
+	pubNoted   map[int64]pubNote     // last publish outcome written per meter (throttle)
 
 	haRestart   chan struct{} // signal the HA loop to reconnect with new cfg
 	utilRestart chan struct{} // signal the utility backfill loop to re-run with new cfg
@@ -179,6 +180,13 @@ func (w *worker) reloadConfig(ctx context.Context) {
 			log.Printf("[worker] mqtt connected to %s:%d", cfg.MQTTHost, cfg.MQTTPort)
 		}
 	}
+	// report the broker session truthfully so the API/UI never have to infer it
+	// from a TCP dial
+	detail := ""
+	if !cfg.MQTTConfigured() {
+		detail = "not configured"
+	}
+	_ = w.d.SetWorkerStatus(ctx, db.WorkerStatus{MQTTConnected: w.pub.Connected(), Detail: detail})
 	w.refreshPublishSet(ctx)
 	select {
 	case w.haRestart <- struct{}{}:
@@ -242,12 +250,18 @@ func (w *worker) listenLoop(ctx context.Context) {
 	}
 }
 
-// onReading publishes a meter's state to HA if it's flagged publish.
+// onReading publishes a meter's state to HA if it's flagged publish, and
+// records the real outcome in publish_status — a disconnected broker used to
+// no-op silently while the UI toasted "Publishing to HA".
 func (w *worker) onReading(ctx context.Context, id int64) {
 	w.mu.RLock()
 	m, ok := w.publishSet[id]
 	w.mu.RUnlock()
-	if !ok || !w.pub.Connected() {
+	if !ok {
+		return
+	}
+	if !w.pub.Connected() {
+		w.notePublish(ctx, id, false, "mqtt broker not connected")
 		return
 	}
 	var energy *float64
@@ -261,6 +275,36 @@ func (w *worker) onReading(ctx context.Context, id int64) {
 	}
 	signal := w.d.SignalPerHour(ctx, id)
 	w.pub.PublishState(m, energy, power, signal)
+	w.notePublish(ctx, id, true, "")
+}
+
+// notePublish persists a publish outcome, throttled per meter: repeat successes
+// write at most every 30s (chatty meters would otherwise hammer the table), but
+// any success↔error transition writes immediately.
+func (w *worker) notePublish(ctx context.Context, id int64, ok bool, errMsg string) {
+	w.mu.Lock()
+	if w.pubNoted == nil {
+		w.pubNoted = map[int64]pubNote{}
+	}
+	prev, seen := w.pubNoted[id]
+	transition := !seen || prev.ok != ok || (!ok && prev.err != errMsg)
+	if !transition && ok && time.Since(prev.at) < 30*time.Second {
+		w.mu.Unlock()
+		return
+	}
+	w.pubNoted[id] = pubNote{ok: ok, err: errMsg, at: time.Now()}
+	w.mu.Unlock()
+	if ok {
+		_ = w.d.RecordPublishOK(ctx, id)
+	} else {
+		_ = w.d.RecordPublishError(ctx, id, errMsg)
+	}
+}
+
+type pubNote struct {
+	ok  bool
+	err string
+	at  time.Time
 }
 
 // einfo is a monitored entity's normalization metadata.

@@ -78,6 +78,16 @@ ALTER TABLE test_windows ADD COLUMN IF NOT EXISTS known_entity_id TEXT;
 -- stays stable as more meters are overheard later.
 ALTER TABLE test_windows ADD COLUMN IF NOT EXISTS snoop_k INTEGER;
 
+-- publish_status records the worker's ACTUAL MQTT publish outcomes per meter,
+-- so the UI can tell the truth ("feeding HA · 12s ago" vs "broker unreachable")
+-- instead of assuming the publish flag means data is flowing.
+CREATE TABLE IF NOT EXISTS publish_status (
+    endpoint_id     BIGINT PRIMARY KEY,
+    last_publish_ts TIMESTAMPTZ,
+    last_error      TEXT,
+    updated_at      TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS capture_heartbeat (
     source      TEXT PRIMARY KEY,
     last_ts     TIMESTAMPTZ,

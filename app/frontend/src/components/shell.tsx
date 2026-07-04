@@ -95,7 +95,10 @@ function StatusRail() {
     <div className="mx-2.5 mb-1 rounded-lg border border-border bg-surface/60 p-1">
       {row(capAlive ? "good" : "bad", "Capture", `${rate}/min`)}
       {row(status.data?.ha_ok ? "good" : "off", "HA", status.data?.ha_ok ? "ok" : "—")}
-      {row(status.data?.mqtt_ok ? "good" : "off", "MQTT", status.data?.mqtt_ok ? "ok" : "—")}
+      {/* reachable-but-not-connected is a warn: the worker's session is what
+          actually publishes, a TCP dial succeeding means nothing by itself */}
+      {row(status.data?.mqtt_connected ? "good" : status.data?.mqtt_ok ? "warn" : "off", "MQTT",
+        status.data?.mqtt_connected ? "ok" : status.data?.mqtt_ok ? "no session" : "—")}
       {row("off", "Meters seen", fmt(health.data?.unique_meters ?? 0))}
     </div>
   );
