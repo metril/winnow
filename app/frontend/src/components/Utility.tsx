@@ -1,11 +1,12 @@
+import { useMemo, useState } from "react";
 import { Bar, BarChart, Brush, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Gauge, DollarSign, CalendarRange, Settings as SettingsIcon, Receipt, CalendarDays } from "lucide-react";
+import { Gauge, DollarSign, CalendarRange, ChevronLeft, ChevronRight, Settings as SettingsIcon, Receipt, CalendarDays } from "lucide-react";
 import { api, UtilitySeries } from "../api";
 import { useFetch } from "../fetch";
-import { useLive } from "../live";
+import { useLiveMeta } from "../live";
 import { fmt } from "../util";
 import { Page, View } from "./shell";
-import { Card, CardHeader, CardBody, StatCard, Badge, Button, EmptyState, Skeleton, InfoHint } from "../ui";
+import { Card, CardHeader, CardBody, StatCard, Badge, Button, EmptyState, FetchError, Skeleton, InfoHint } from "../ui";
 import { brushProps } from "./charts";
 import { useChartTheme } from "./chartTheme";
 
@@ -25,13 +26,77 @@ function periodLabel(ts: string, period: string): string {
   return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric" });
 }
 
+// usePagedWindow: a CONTROLLED browse window over a chart's data — the Brush
+// reflects it, drags update it, and ‹ › page it a full window at a time. State
+// living here (not inside Recharts) means re-renders can never snap the window
+// back, and paging works without fiddly slider dragging.
+interface PagedWindow {
+  s: number; e: number;
+  atStart: boolean; atEnd: boolean;
+  shift: (dir: 1 | -1) => void;
+  reset: () => void;
+  onBrush: (r: any) => void;
+}
+function usePagedWindow(total: number, winSize: number): PagedWindow {
+  const [win, setWin] = useState<{ s: number; e: number } | null>(null); // null = pinned to latest
+  const width = Math.min(winSize, Math.max(total, 1));
+  const s = win ? win.s : Math.max(0, total - width);
+  const e = win ? win.e : Math.max(0, total - 1);
+  const shift = (dir: 1 | -1) => {
+    const w = e - s + 1;
+    const ns = Math.max(0, Math.min(Math.max(0, total - w), s + dir * w));
+    setWin({ s: ns, e: ns + w - 1 });
+  };
+  return {
+    s, e,
+    atStart: s <= 0,
+    atEnd: e >= total - 1,
+    shift,
+    reset: () => setWin(null),
+    onBrush: (r: any) => {
+      if (r && typeof r.startIndex === "number") setWin({ s: r.startIndex, e: r.endIndex });
+    },
+  };
+}
+
+function WindowPager({ w }: { w: PagedWindow }) {
+  return (
+    <div className="inline-flex items-center gap-0.5">
+      <Button size="sm" variant="ghost" aria-label="Older" icon={<ChevronLeft size={14} />}
+        onClick={() => w.shift(-1)} disabled={w.atStart} />
+      <Button size="sm" variant="ghost" aria-label="Newer" icon={<ChevronRight size={14} />}
+        onClick={() => w.shift(1)} disabled={w.atEnd} />
+      <Button size="sm" variant="ghost" onClick={w.reset} disabled={w.atEnd}>Latest</Button>
+    </div>
+  );
+}
+
 export default function Utility({ onNav }: { onNav: (v: View) => void }) {
   const ch = useChartTheme();
-  const { configVersion } = useLive();
+  const { configVersion } = useLiveMeta();
   const u = useFetch(api.utilitySeries, [configVersion]);
+  const d: UtilitySeries | null = u.data;
 
-  if (!u.data) return <Page title="Utility bill"><Skeleton className="h-64" /></Page>;
-  const d: UtilitySeries = u.data;
+  // stable chart arrays: recompute only when the fetch result changes
+  const { data, days, hasMeter, hasShaped, hasDayMeter } = useMemo(() => {
+    if (!d?.statistic_id) return { data: [] as any[], days: [] as any[], hasMeter: false, hasShaped: false, hasDayMeter: false };
+    const pts = d.points;
+    const est = d.daily_estimate || [];
+    return {
+      data: pts.map((p) => ({ t: periodLabel(p.ts, d.period), bill: p.kwh, meter: p.meter_kwh, cost: p.cost, cov: Math.round(p.coverage_pct * 100) })),
+      days: est.map((e) => ({ t: e.day.slice(5), flat: e.flat_kwh, shaped: e.shaped_kwh, meter: e.meter_kwh })),
+      hasMeter: pts.some((p) => p.meter_kwh != null),
+      hasShaped: est.some((e) => e.shaped_kwh != null),
+      hasDayMeter: est.some((e) => e.meter_kwh != null),
+    };
+  }, [d]);
+
+  const winSize = d?.period === "hour" ? 168 : d?.period === "day" ? 60 : 24;
+  const billWin = usePagedWindow(data.length, winSize);
+  const dayWin = usePagedWindow(days.length, 60);
+
+  if (u.error) return <Page title="Utility bill"><FetchError error={u.error} onRetry={u.reload} /></Page>;
+  if (!d) return <Page title="Utility bill"><Skeleton className="h-64" /></Page>;
 
   if (!d.statistic_id) {
     return (
@@ -51,25 +116,12 @@ export default function Utility({ onNav }: { onNav: (v: View) => void }) {
   const pts = d.points;
   const latest = pts[pts.length - 1];
   const totalCost = d.cost_per_kwh > 0 ? d.total_kwh * d.cost_per_kwh : 0;
-  const hasMeter = pts.some((p) => p.meter_kwh != null);
-  const data = pts.map((p) => ({
-    t: periodLabel(p.ts, d.period), bill: p.kwh, meter: p.meter_kwh, cost: p.cost, cov: Math.round(p.coverage_pct * 100),
-  }));
-  // Browse window: default the brush to the most recent buckets so the chart opens
-  // on recent data while the handle reveals the full history.
-  const winSize = d.period === "hour" ? 168 : d.period === "day" ? 60 : 24;
-  const billStart = Math.max(0, data.length - winSize);
-
-  const est = d.daily_estimate || [];
-  const hasShaped = est.some((e) => e.shaped_kwh != null);
-  const hasDayMeter = est.some((e) => e.meter_kwh != null);
-  const days = est.map((e) => ({ t: e.day.slice(5), flat: e.flat_kwh, shaped: e.shaped_kwh, meter: e.meter_kwh }));
-  const dayStart = Math.max(0, days.length - 60);
 
   return (
     <Page title="Utility bill"
       actions={<>
         <Badge tone="brand">{d.period}</Badge>
+        {latest && <Badge tone="default">bills through {periodLabel(latest.ts, d.period)}</Badge>}
         <Button variant="ghost" icon={<SettingsIcon size={15} />} onClick={() => onNav("settings")}>Change statistic</Button>
       </>}>
 
@@ -94,8 +146,9 @@ export default function Utility({ onNav }: { onNav: (v: View) => void }) {
       <Card>
         <CardHeader title="Billed energy" icon={<Receipt size={16} />}
           subtitle={hasMeter
-            ? "Your utility bill (gold) vs what winnow's published meter recorded for the same periods (teal) — they should match if winnow is tracking your meter. Drag the slider below to browse older periods."
-            : "Your billed energy per period. Publish your meter (on the Identify/Meters page) to overlay what winnow recorded and reconcile against the bill. Drag the slider below to browse older periods."} />
+            ? "Your utility bill (gold) vs what winnow's published meter recorded for the same periods (teal) — they should match if winnow is tracking your meter. Page with ‹ › or drag the slider."
+            : "Your billed energy per period. Publish your meter (on the Identify/Meters page) to overlay what winnow recorded and reconcile against the bill. Page with ‹ › or drag the slider."}
+          actions={data.length > winSize ? <WindowPager w={billWin} /> : undefined} />
         <CardBody>
           {pts.length === 0
             ? <EmptyState icon={<Receipt size={20} />} title="No billing data yet">
@@ -113,7 +166,7 @@ export default function Utility({ onNav }: { onNav: (v: View) => void }) {
                   <Bar name="billed" dataKey="bill" fill={ch.gold} radius={[3, 3, 0, 0]} isAnimationActive={false} />
                   {hasMeter && <Bar name="winnow meter" dataKey="meter" fill={ch.brand} radius={[3, 3, 0, 0]} isAnimationActive={false} />}
                   {data.length > winSize &&
-                    <Brush dataKey="t" {...brushProps(ch)} startIndex={billStart} />}
+                    <Brush dataKey="t" {...brushProps(ch)} startIndex={billWin.s} endIndex={billWin.e} onChange={billWin.onBrush} />}
                 </BarChart>
               </ResponsiveContainer>}
         </CardBody>
@@ -122,7 +175,8 @@ export default function Utility({ onNav }: { onNav: (v: View) => void }) {
       {days.length > 0 && (
         <Card>
           <CardHeader title="Estimated daily usage" icon={<CalendarDays size={16} />}
-            subtitle="Your monthly bill spread across its days: a flat level (bill ÷ days) for reconciliation, and — when you have monitored sensors — a profile-shaped curve with real day-to-day variance. It's a weak but useful signal: the meter whose daily totals track these is likely yours. Drag the slider to browse." />
+            subtitle="Your monthly bill spread across its days: a flat level (bill ÷ days) for reconciliation, and — when you have monitored sensors — a profile-shaped curve with real day-to-day variance. It's a weak but useful signal: the meter whose daily totals track these is likely yours. Page with ‹ › or drag the slider."
+            actions={days.length > 60 ? <WindowPager w={dayWin} /> : undefined} />
           <CardBody>
             <ResponsiveContainer width="100%" height={260}>
               <LineChart data={days}>
@@ -138,7 +192,7 @@ export default function Utility({ onNav }: { onNav: (v: View) => void }) {
                 {hasDayMeter && <Line name="winnow meter" dataKey="meter" stroke={ch.brand} strokeWidth={2}
                   dot={{ r: 2 }} activeDot={{ r: 4 }} isAnimationActive={false} connectNulls />}
                 {days.length > 60 &&
-                  <Brush dataKey="t" {...brushProps(ch)} startIndex={dayStart} />}
+                  <Brush dataKey="t" {...brushProps(ch)} startIndex={dayWin.s} endIndex={dayWin.e} onChange={dayWin.onBrush} />}
               </LineChart>
             </ResponsiveContainer>
           </CardBody>

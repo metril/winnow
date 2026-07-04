@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Satellite, KeyRound, ShieldCheck, Copy, Check, Trash2, Terminal, Plug, Clock, UserCheck } from "lucide-react";
 import { api, AgentsResp, PendingAgent } from "../api";
-import { useLive } from "../live";
+import { useLiveMeta } from "../live";
 import { useFetch } from "../fetch";
 import { shortTs, copyText } from "../util";
 import { Page } from "./shell";
@@ -24,7 +24,7 @@ function Copyable({ value, mono = true }: { value: string; mono?: boolean }) {
 }
 
 export default function Agents() {
-  const { configVersion, agentVersion } = useLive();
+  const { configVersion, agentVersion } = useLiveMeta();
   const { data, reload } = useFetch(api.agents, [configVersion, agentVersion]);
   return (
     <Page title="Remote agents" breadcrumb="System">

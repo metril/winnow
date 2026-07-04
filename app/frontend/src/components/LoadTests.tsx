@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Zap, Square, Play, Trash2, Trophy, ChevronDown, ChevronRight } from "lucide-react";
 import { api, TestWindow } from "../api";
-import { useLive } from "../live";
+import { useLiveMeta } from "../live";
 import { useFetch } from "../fetch";
 import { shortTs } from "../util";
 import { Page } from "./shell";
@@ -9,7 +9,7 @@ import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, EmptyStat
 import { ConfidenceBar } from "./charts";
 
 export default function LoadTests() {
-  const { configVersion } = useLive();
+  const { configVersion } = useLiveMeta();
   const [label, setLabel] = useState("");
   const [knownW, setKnownW] = useState("");
   const tests = useFetch(api.tests, [configVersion]);
