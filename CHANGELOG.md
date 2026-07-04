@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.10.0](https://github.com/metril/winnow/compare/v1.9.0...v1.10.0) (2026-07-04)
+
+
+### Features
+
+* **overview:** center the dashboard on your meter with honest publish status ([#19](https://github.com/metril/winnow/issues/19)) ([e857e02](https://github.com/metril/winnow/commit/e857e02b6ba9782194f2e43c2ce231074a47a7b5))
+* **usage:** browse any meter's consumption by day, week, month or year ([#17](https://github.com/metril/winnow/issues/17)) ([8e6943c](https://github.com/metril/winnow/commit/8e6943c97ab1e61cf47876cdb38f9dff40e17725))
+* **worker:** backfill reference gaps from HA long-term statistics ([#21](https://github.com/metril/winnow/issues/21)) ([b9205a3](https://github.com/metril/winnow/commit/b9205a399656c07bf91415360dcadfe676e197ca))
+
+
+### Bug Fixes
+
+* **analytics:** glitch/rollover-aware charts in local time, honest UI states ([#22](https://github.com/metril/winnow/issues/22)) ([bcfa8a8](https://github.com/metril/winnow/commit/bcfa8a83f2622de4d68c05794778bbc1d54f239b))
+* **reference:** bound gap-fill carry, gate the daily screen on real coverage ([#20](https://github.com/metril/winnow/issues/20)) ([db146d5](https://github.com/metril/winnow/commit/db146d50e8ad6637c8af40a107a2580bfcc86234))
+
+
+### Performance Improvements
+
+* **db:** hourly-aggregate reads, publish N+1 fix, gzip, screen memo ([#23](https://github.com/metril/winnow/issues/23)) ([7b1841a](https://github.com/metril/winnow/commit/7b1841a7d4131b0645447d65e86a88137e73188a))
+
 ## [1.9.0](https://github.com/metril/winnow/compare/v1.8.0...v1.9.0) (2026-06-10)
 
 
