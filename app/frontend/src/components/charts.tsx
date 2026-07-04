@@ -5,7 +5,13 @@ import {
 } from "recharts";
 import { fmt, shortTs, tsMs } from "../util";
 import { HeatCell } from "../api";
-import { useChartTheme } from "./chartTheme";
+import { ChartTheme, useChartTheme } from "./chartTheme";
+
+// brushProps is the one themed Brush config (Recharts requires Brush to be a
+// direct chart child, so this is a props helper rather than a wrapper component).
+export function brushProps(ch: ChartTheme) {
+  return { height: 22, stroke: ch.brand, fill: ch.empty, travellerWidth: 8, tickFormatter: () => "" };
+}
 
 const axisFmt = (t: number) => shortTs(new Date(t).toISOString()).slice(5, 16);
 

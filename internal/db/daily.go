@@ -291,19 +291,7 @@ func (d *DB) evalDailyRow(row *DailyMeterRow, byDay map[string]float64, days []s
 // of counter deltas per local day — one query over the hourly counter maxima.
 func (d *DB) meterDailyUnits(ctx context.Context, lo, hi time.Time, tz string) (map[int64]map[string]float64, error) {
 	rows, err := d.pool.Query(ctx, `
-WITH hb AS (
-  SELECT r.endpoint_id, time_bucket('1 hour', r.bucket) AS hb, max(r.max_c) AS cmax,
-         CASE WHEN mi.msg_type = 'SCM' THEN 16777216.0 ELSE 4294967296.0 END AS modulus
-  FROM readings_1m r JOIN meter_index mi USING (endpoint_id)
-  WHERE r.bucket >= $1 AND r.bucket <= $2
-  GROUP BY r.endpoint_id, hb, modulus),
-stepped AS (
-  SELECT endpoint_id, hb, modulus,
-         cmax - lag(cmax) OVER (PARTITION BY endpoint_id ORDER BY hb) AS raw
-  FROM hb),
-m AS (
-  SELECT endpoint_id, hb, `+rolloverDeltaSQL("raw", "modulus")+` AS delta
-  FROM stepped),`+glitchCleanCTEs("m", "hb")+`
+WITH `+hourlyDeltaCTEs("r.bucket >= $1 AND r.bucket <= $2")+`
 SELECT endpoint_id, (hb AT TIME ZONE $3)::date AS day, sum(delta)
 FROM glitch_clean GROUP BY endpoint_id, day`, lo, hi, tz)
 	if err != nil {

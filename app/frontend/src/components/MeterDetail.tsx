@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Star, Radio, EyeOff, Eye, Terminal, Download, CalendarClock, Copy, Gauge } from "lucide-react";
 import { api, HeatCell, DailyPoint, Benchmark, UtilityCompare } from "../api";
+import { useFetch } from "../fetch";
 import { fmt, shortTs, tsMs, since, copyText } from "../util";
 import { Heatmap } from "./charts";
 import { ConsumptionBrowser } from "./Usage";
 import { useChartTheme } from "./chartTheme";
-import { Button, Input, Field, Badge, Tabs, Segmented, Skeleton, EmptyState, IconButton, InfoHint, useToast } from "../ui";
+import { Button, Input, Field, Badge, Tabs, Segmented, Skeleton, EmptyState, FetchError, IconButton, InfoHint, useToast } from "../ui";
 
 type DTab = "usage" | "timeline" | "heatmap" | "daily" | "utility";
 const tickFmt = (t: number) => shortTs(new Date(t).toISOString()).slice(5, 16);
@@ -38,7 +39,12 @@ export default function MeterDetail({ id, hours, onChange }: { id: number; hours
 
       {tab === "usage" && <ConsumptionBrowser id={id} />}
 
-      {tab === "timeline" && (
+      {tab === "timeline" && points.length === 0 && deltas.length === 0 && (
+        <EmptyState icon={<CalendarClock size={20} />} title="No data in this window">
+          Nothing heard from #{id} in the selected range — the Usage tab pages through this meter's full history.
+        </EmptyState>
+      )}
+      {tab === "timeline" && (points.length > 0 || deltas.length > 0) && (
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             <Segmented options={[{ value: "5m", label: "5m" }, { value: "1h", label: "1h" }, { value: "1d", label: "1d" }]} value={bucket} onChange={setBucket} />
@@ -97,19 +103,22 @@ export default function MeterDetail({ id, hours, onChange }: { id: number; hours
 }
 
 function HeatmapTab({ id }: { id: number }) {
-  const [cells, setCells] = useState<HeatCell[] | null>(null);
-  useEffect(() => { api.profile(id, "heatmap", 14).then(setCells); }, [id]);
-  if (!cells) return <Skeleton className="h-32" />;
+  const q = useFetch<HeatCell[]>(() => api.profile(id, "heatmap", 14), [id]);
+  if (q.error) return <FetchError error={q.error} onRetry={q.reload} />;
+  if (!q.data) return <Skeleton className="h-32" />;
+  const cells = q.data;
   if (!cells.length) return <EmptyState icon={<CalendarClock size={20} />} title="Not enough history">A usage heatmap appears once this meter has a couple of weeks of readings.</EmptyState>;
   return <div><div className="label mb-2">Average use by hour × day of week (14 days)</div><Heatmap cells={cells} /></div>;
 }
 
 function DailyTab({ id }: { id: number }) {
   const ch = useChartTheme();
-  const [daily, setDaily] = useState<DailyPoint[] | null>(null);
-  const [bench, setBench] = useState<Benchmark | null>(null);
-  useEffect(() => { api.profile(id, "daily", 30).then(setDaily); api.benchmark(id, 7).then(setBench); }, [id]);
-  if (!daily) return <Skeleton className="h-44" />;
+  const dailyQ = useFetch<DailyPoint[]>(() => api.profile(id, "daily", 30), [id]);
+  const benchQ = useFetch<Benchmark | null>(() => api.benchmark(id, 7).catch(() => null), [id]);
+  if (dailyQ.error) return <FetchError error={dailyQ.error} onRetry={dailyQ.reload} />;
+  if (!dailyQ.data) return <Skeleton className="h-44" />;
+  const daily = dailyQ.data;
+  const bench = benchQ.data;
   return (
     <div className="space-y-3">
       {bench && bench.peers > 0 && (
@@ -135,9 +144,12 @@ function DailyTab({ id }: { id: number }) {
 
 function UtilityTab({ id, onCalibrated }: { id: number; onCalibrated: () => void }) {
   const ch = useChartTheme();
-  const [c, setC] = useState<UtilityCompare | null>(null);
-  useEffect(() => { api.utilityCompare(id).then(setC).catch(() => setC({} as UtilityCompare)); }, [id]);
-  if (!c) return <Skeleton className="h-44" />;
+  // a failed fetch is an ERROR, not "no bill connected" — the old catch masked
+  // real 500s as a config state
+  const q = useFetch<UtilityCompare>(() => api.utilityCompare(id), [id]);
+  if (q.error) return <FetchError error={q.error} onRetry={q.reload} />;
+  if (!q.data) return <Skeleton className="h-44" />;
+  const c = q.data;
   if (!c.statistic_id) {
     return <EmptyState icon={<Gauge size={20} />} title="No utility bill connected">
       Pick your utility energy statistic (e.g. Opower/Eversource) in Settings → Utility bill to compare this meter against your bill.

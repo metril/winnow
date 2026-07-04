@@ -7,7 +7,7 @@ import { useFetch } from "../fetch";
 import { useSourceLabels } from "../sources";
 import { fmt } from "../util";
 import { Page, View } from "./shell";
-import { Card, CardHeader, CardBody, StatCard, Badge, Dot, Button, EmptyState, Skeleton } from "../ui";
+import { Card, CardHeader, CardBody, StatCard, Badge, Dot, Button, EmptyState, FetchError, Skeleton } from "../ui";
 import { Sparkline } from "./charts";
 import { useChartTheme } from "./chartTheme";
 
@@ -40,10 +40,11 @@ export default function Overview({ onNav }: { onNav: (v: View, p?: (string | num
       {/* Row 1 — hero + system status */}
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          {ov.data == null ? <Skeleton className="h-48" />
-            : my ? <MyHero my={my} power={power} spark={spark} cur={cur} onNav={onNav} />
-              : pubs.length > 0 ? <Hero pubs={pubs} power={power} spark={spark} cur={cur} />
-                : <OnboardingHero onNav={onNav} />}
+          {ov.error ? <FetchError error={ov.error} onRetry={ov.reload} />
+            : ov.data == null ? <Skeleton className="h-48" />
+              : my ? <MyHero my={my} power={power} spark={spark} cur={cur} onNav={onNav} />
+                : pubs.length > 0 ? <Hero pubs={pubs} power={power} spark={spark} cur={cur} />
+                  : <OnboardingHero onNav={onNav} />}
         </div>
         <Card>
           <CardHeader title="System" icon={<Activity size={16} />} />
