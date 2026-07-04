@@ -407,13 +407,14 @@ FROM per_min GROUP BY day ORDER BY day`, entities, lo, hi, tz)
 	return out
 }
 
-// billDailyBand derives a kWh/day band for the given local calendar month ("06")
-// from the stored monthly utility bills: the same month across all years (its
-// seasonal shape), falling back to every month when that month never appears.
-func (d *DB) billDailyBand(ctx context.Context, month string) (float64, float64, bool) {
+// billMonthlyRates returns every stored monthly bill's daily rate (kWh/day,
+// ×kwhFactor) keyed by its local calendar month "01".."12" — the shared basis
+// for the screen's magnitude band and the forward projection of the daily
+// estimate past the last posted bill.
+func (d *DB) billMonthlyRates(ctx context.Context) (map[string][]float64, bool) {
 	cfg, err := d.LoadConfig(ctx)
 	if err != nil || !cfg.UtilityConfigured() {
-		return 0, 0, false
+		return nil, false
 	}
 	factor := kwhFactor(cfg.UtilityUnit)
 	tz := cfg.HATimeZone
@@ -426,26 +427,45 @@ SELECT to_char(ts AT TIME ZONE $2, 'MM') AS mon,
 FROM utility_energy
 WHERE statistic_id = $1 AND period = 'month' AND kwh > 0`, cfg.UtilityStatisticID, tz)
 	if err != nil {
-		return 0, 0, false
+		return nil, false
 	}
 	defer rows.Close()
-	var match, all []float64
+	out := map[string][]float64{}
+	n := 0
 	for rows.Next() {
 		var mon string
 		var rate float64
 		if err := rows.Scan(&mon, &rate); err != nil {
-			return 0, 0, false
+			return nil, false
 		}
-		rate *= factor
-		all = append(all, rate)
-		if mon == month {
-			match = append(match, rate)
-		}
+		out[mon] = append(out[mon], rate*factor)
+		n++
 	}
-	use := match
-	if len(use) == 0 {
-		use = all
+	return out, n > 0
+}
+
+// monthRatesFor picks the same-calendar-month rates (seasonal shape), falling
+// back to every month when that month never appears in the bills.
+func monthRatesFor(rates map[string][]float64, month string) []float64 {
+	if rs := rates[month]; len(rs) > 0 {
+		return rs
 	}
+	var all []float64
+	for _, rs := range rates {
+		all = append(all, rs...)
+	}
+	return all
+}
+
+// billDailyBand derives a kWh/day band for the given local calendar month ("06")
+// from the stored monthly utility bills: the same month across all years (its
+// seasonal shape), falling back to every month when that month never appears.
+func (d *DB) billDailyBand(ctx context.Context, month string) (float64, float64, bool) {
+	rates, ok := d.billMonthlyRates(ctx)
+	if !ok {
+		return 0, 0, false
+	}
+	use := monthRatesFor(rates, month)
 	if len(use) == 0 {
 		return 0, 0, false
 	}
@@ -454,6 +474,20 @@ WHERE statistic_id = $1 AND period = 'month' AND kwh > 0`, cfg.UtilityStatisticI
 		lo, hi = math.Min(lo, r), math.Max(hi, r)
 	}
 	return round(lo, 2), round(hi, 2), true
+}
+
+// billDailyMonthMean is the historical mean daily rate for a calendar month —
+// what a day in that month "should" cost before its bill posts.
+func billDailyMonthMean(rates map[string][]float64, month string) (float64, bool) {
+	use := monthRatesFor(rates, month)
+	if len(use) == 0 {
+		return 0, false
+	}
+	sum := 0.0
+	for _, r := range use {
+		sum += r
+	}
+	return round(sum/float64(len(use)), 3), true
 }
 
 func ptr[T any](v T) *T { return &v }
