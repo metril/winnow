@@ -251,3 +251,55 @@ func (f *flexTime) UnmarshalJSON(b []byte) error {
 	f.Time = time.UnixMilli(int64(ms)).UTC()
 	return nil
 }
+
+// MeanPoint is one hourly bucket of a sensor's long-term statistics used for
+// reference-gap backfill: Mean for measurement (power) sensors, Change for
+// sum-type (energy) sensors.
+type MeanPoint struct {
+	Start  time.Time
+	Mean   *float64
+	Change *float64
+}
+
+// StatisticsMeanDuringPeriod fetches hourly mean/change statistics for several
+// sensor entities over [start,end] — the raw material for reconstructing
+// reference_samples across a feed outage. HA's recorder keeps hourly long-term
+// statistics indefinitely, so an outage costs live samples but not history.
+func StatisticsMeanDuringPeriod(ctx context.Context, base, token string, statIDs []string, start, end time.Time) (map[string][]MeanPoint, error) {
+	c, read, write, err := authConn(ctx, base, token)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close(websocket.StatusNormalClosure, "")
+
+	if err := write(map[string]any{
+		"id":            1,
+		"type":          "recorder/statistics_during_period",
+		"statistic_ids": statIDs,
+		"period":        "hour",
+		"start_time":    start.UTC().Format(time.RFC3339),
+		"end_time":      end.UTC().Format(time.RFC3339),
+		"types":         []string{"mean", "change"},
+	}); err != nil {
+		return nil, err
+	}
+	payload, err := readResult(read, 1)
+	if err != nil {
+		return nil, err
+	}
+	var byID map[string][]struct {
+		Start  flexTime `json:"start"`
+		Mean   *float64 `json:"mean"`
+		Change *float64 `json:"change"`
+	}
+	if err := json.Unmarshal(payload, &byID); err != nil {
+		return nil, err
+	}
+	out := make(map[string][]MeanPoint, len(byID))
+	for id, pts := range byID {
+		for _, p := range pts {
+			out[id] = append(out[id], MeanPoint{Start: p.Start.Time, Mean: p.Mean, Change: p.Change})
+		}
+	}
+	return out, nil
+}

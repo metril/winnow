@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS reference_samples (
     power_w   DOUBLE PRECISION
 );
 CREATE INDEX IF NOT EXISTS idx_ref_entity_ts ON reference_samples(entity_id, ts);
+-- src distinguishes live WS samples from statistics-derived backfill so a
+-- re-run can idempotently replace backfilled spans without ever touching what
+-- the feed really said ('live').
+ALTER TABLE reference_samples ADD COLUMN IF NOT EXISTS src TEXT DEFAULT 'live';
 
 -- utility_energy holds the user's billed energy pulled from HA long-term
 -- statistics (e.g. the Opower/Eversource integration), one row per period bucket

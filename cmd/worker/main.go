@@ -452,6 +452,9 @@ func (w *worker) utilityLoop(ctx context.Context) {
 		w.mu.RLock()
 		cfg := w.cfg
 		w.mu.RUnlock()
+		if cfg.HAConfigured() && cfg.ReferenceConfigured() {
+			w.backfillReferenceGaps(ctx, cfg)
+		}
 		if cfg.HAConfigured() && cfg.UtilityConfigured() {
 			if err := w.backfillUtility(ctx, cfg); err != nil {
 				log.Printf("[worker] utility backfill: %v", err)
@@ -459,6 +462,85 @@ func (w *worker) utilityLoop(ctx context.Context) {
 		}
 		if !waitOrRestart(ctx, 12*time.Hour, w.utilRestart) {
 			return
+		}
+	}
+}
+
+// backfillReferenceGaps reconstructs reference_samples across feed outages from
+// HA long-term statistics (hourly means — HA keeps them indefinitely), so an
+// outage like June 2026's 23-day silence costs identification evidence only
+// until the next worker run, not forever. Backfilled rows are tagged
+// src='lts_backfill' and replaced idempotently; live rows are never touched.
+func (w *worker) backfillReferenceGaps(ctx context.Context, cfg config.Config) {
+	// LTS hourly buckets are only complete through the previous full hour, and a
+	// live-feed outage should still read as STALE on the dashboard — cap the
+	// backfill 2h back so it can't mask a current outage with near-now samples.
+	capEnd := time.Now().Add(-2 * time.Hour)
+	gaps := w.d.ReferenceGaps(ctx, cfg.MonitoredEntities, 60*24*time.Hour, 30*time.Minute, capEnd)
+	if len(gaps) == 0 {
+		return
+	}
+	fctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	client := ha.New(cfg.HAURL, cfg.HAToken)
+	info := buildEntityInfo(fctx, client, cfg.MonitoredEntities)
+	for _, g := range gaps {
+		lo, hi := g[0], g[1]
+		if hi.After(capEnd) {
+			hi = capEnd
+		}
+		if !lo.Before(hi) {
+			continue
+		}
+		// fetch from one hour before the gap so the first partial hour is covered
+		means, err := ha.StatisticsMeanDuringPeriod(fctx, cfg.HAURL, cfg.HAToken,
+			cfg.MonitoredEntities, lo.Add(-time.Hour), hi)
+		if err != nil {
+			log.Printf("[worker] reference backfill %s..%s: %v", lo.Format(time.RFC3339), hi.Format(time.RFC3339), err)
+			return
+		}
+		filled := 0
+		for entity, pts := range means {
+			in, ok := info[entity]
+			if !ok {
+				continue
+			}
+			var ts []time.Time
+			var pw []float64
+			for _, p := range pts {
+				var powerW float64
+				switch {
+				case in.kind == "power" && p.Mean != nil:
+					powerW = *p.Mean * in.factor
+				case in.kind == "energy" && p.Change != nil:
+					// hourly consumed energy (stats unit → kWh) → average W
+					powerW = *p.Change * in.factor * 1000
+				default:
+					continue
+				}
+				if powerW < 0 {
+					powerW = 0
+				}
+				// 5-minute density inside the hour: dense enough that the bounded
+				// gap-fill integrates the hourly mean exactly
+				for m := 0; m < 60; m += 5 {
+					t := p.Start.Add(time.Duration(m) * time.Minute)
+					if t.Before(lo) || t.After(hi) {
+						continue
+					}
+					ts = append(ts, t)
+					pw = append(pw, powerW)
+				}
+			}
+			if err := w.d.ReplaceBackfillSamples(ctx, entity, lo, hi, ts, pw); err != nil {
+				log.Printf("[worker] reference backfill insert %s: %v", entity, err)
+				continue
+			}
+			filled += len(ts)
+		}
+		if filled > 0 {
+			log.Printf("[worker] reference backfill: %s..%s filled with %d statistic samples",
+				lo.Format(time.RFC3339), hi.Format(time.RFC3339), filled)
 		}
 	}
 }

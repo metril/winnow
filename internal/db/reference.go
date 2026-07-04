@@ -119,6 +119,64 @@ SELECT percentile_cont(0.05) WITHIN GROUP (ORDER BY power) FROM agg WHERE power 
 	return round(*floor, 1)
 }
 
+// ReferenceGaps returns holes (> minGap with zero samples, any entity) in the
+// last `lookback` of the reference feed, including a trailing hole from the
+// last sample to `capEnd` — the work-list for statistics backfill. Gap edges
+// are the surrounding real samples.
+func (d *DB) ReferenceGaps(ctx context.Context, entities []string, lookback time.Duration, minGap time.Duration, capEnd time.Time) [][2]time.Time {
+	out := [][2]time.Time{}
+	if len(entities) == 0 {
+		return out
+	}
+	rows, err := d.pool.Query(ctx, `
+WITH mins AS (
+  SELECT DISTINCT time_bucket('1 minute', ts) AS mt
+  FROM reference_samples
+  WHERE entity_id = ANY($1) AND ts >= $2),
+g AS (SELECT mt, lag(mt) OVER (ORDER BY mt) AS prev FROM mins)
+SELECT prev, mt FROM g WHERE mt - prev > make_interval(secs => $3) ORDER BY prev`,
+		entities, time.Now().Add(-lookback), minGap.Seconds())
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var a, b time.Time
+		if err := rows.Scan(&a, &b); err != nil {
+			return out
+		}
+		out = append(out, [2]time.Time{a, b})
+	}
+	rows.Close()
+	// trailing hole: feed dead right now (or backfill catching up after restart)
+	var last *time.Time
+	_ = d.pool.QueryRow(ctx,
+		`SELECT max(ts) FROM reference_samples WHERE entity_id = ANY($1)`, entities).Scan(&last)
+	if last != nil && capEnd.Sub(*last) > minGap {
+		out = append(out, [2]time.Time{*last, capEnd})
+	}
+	return out
+}
+
+// ReplaceBackfillSamples idempotently (re)writes statistics-derived samples for
+// one entity over [from,to]: prior backfill rows in the span are deleted first;
+// live rows are never touched.
+func (d *DB) ReplaceBackfillSamples(ctx context.Context, entity string, from, to time.Time, ts []time.Time, powerW []float64) error {
+	if _, err := d.pool.Exec(ctx,
+		`DELETE FROM reference_samples WHERE entity_id=$1 AND src='lts_backfill' AND ts >= $2 AND ts <= $3`,
+		entity, from, to); err != nil {
+		return err
+	}
+	if len(ts) == 0 {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+INSERT INTO reference_samples (ts, entity_id, power_w, src)
+SELECT t, $1, w, 'lts_backfill' FROM unnest($2::timestamptz[], $3::double precision[]) AS u(t, w)`,
+		entity, ts, powerW)
+	return err
+}
+
 // RefGap is a hole in the reference feed (no real samples).
 type RefGap struct {
 	Start string `json:"start"`
