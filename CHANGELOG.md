@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.11.0](https://github.com/metril/winnow/compare/v1.10.0...v1.11.0) (2026-07-04)
+
+
+### Features
+
+* **usage:** compare meters as aligned panels, quick meter cycling ([#27](https://github.com/metril/winnow/issues/27)) ([f955ace](https://github.com/metril/winnow/commit/f955acef9e8998a4b8925a445f1aae797b38b77b))
+* **utility:** project the daily bill estimate past the last posted bill ([#26](https://github.com/metril/winnow/issues/26)) ([f721f1d](https://github.com/metril/winnow/commit/f721f1ddc89cbc38ce0cbb57d01f509f1c9649bf))
+
+
+### Bug Fixes
+
+* **live:** stop per-packet page re-renders; controlled Utility paging ([#24](https://github.com/metril/winnow/issues/24)) ([9cd0d91](https://github.com/metril/winnow/commit/9cd0d910c3bcbaac5bb14f2ef6b4e4d481f4096b))
+
 ## [1.10.0](https://github.com/metril/winnow/compare/v1.9.0...v1.10.0) (2026-07-04)
 
 
