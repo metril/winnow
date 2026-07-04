@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Crosshair, AlertTriangle, Settings, Trophy, Check, X, RotateCcw, CalendarDays, FlaskConical, CheckCircle2, BarChart3 } from "lucide-react";
 import { Brush, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, CorrRow, DailyMeterRow, IdentifyDaily } from "../api";
-import { useLive } from "../live";
+import { useLiveMeta } from "../live";
 import { useFetch } from "../fetch";
 import { fmt } from "../util";
 import { Page, View } from "./shell";
@@ -35,7 +35,7 @@ async function loadAll(hours: number, bucket: string, commodity: string, selecte
 }
 
 export default function Identify({ onNav }: { onNav?: (v: View, p?: (string | number)[]) => void }) {
-  const { configVersion } = useLive();
+  const { configVersion } = useLiveMeta();
   const [hours, setHours] = useState(6);
   const [bucket, setBucket] = useState("auto");
   const [commodity, setCommodity] = useState("electric");

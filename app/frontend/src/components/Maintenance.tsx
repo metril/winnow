@@ -4,7 +4,7 @@ import {
   Recycle, RefreshCw, Boxes, ListRestart, Eraser,
 } from "lucide-react";
 import { api, DBStats, MaintOp, DeleteMode } from "../api";
-import { useLive } from "../live";
+import { useLiveMeta } from "../live";
 import { useFetch } from "../fetch";
 import { useSourceLabels } from "../sources";
 import { fmt, bytes, spanOf, shortTs } from "../util";
@@ -15,7 +15,7 @@ import {
 } from "../ui";
 
 export default function Maintenance() {
-  const { configVersion } = useLive();
+  const { configVersion } = useLiveMeta();
   const { data, reload } = useFetch(api.adminStats, [configVersion]);
   return (
     <Page title="Maintenance" breadcrumb="System"

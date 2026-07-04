@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Search, Radio, EyeOff, Eye, Trash2, GitCompare, X } from "lucide-react";
 import { api, Meter } from "../api";
-import { useLive } from "../live";
+import { useLiveMeta } from "../live";
 import { useFetch } from "../fetch";
 import { fmt, shortTs, since } from "../util";
 import { Page } from "./shell";
@@ -13,7 +13,7 @@ import { TrackStar, PublishToggle } from "./MeterActions";
 const RANGES = [{ value: 1, label: "1h" }, { value: 6, label: "6h" }, { value: 24, label: "24h" }, { value: 72, label: "3d" }, { value: 168, label: "7d" }];
 
 export default function Meters({ initialDetail = null }: { initialDetail?: number | null }) {
-  const { configVersion } = useLive();
+  const { configVersion } = useLiveMeta();
   const toast = useToast();
   const [hours, setHours] = useState(24);
   const [search, setSearch] = useState("");

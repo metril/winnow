@@ -3,7 +3,7 @@ import { BarChart3, CalendarDays, Flame, Gauge, Sigma, TrendingUp } from "lucide
 import { Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, Consumption, Meter } from "../api";
 import { useFetch } from "../fetch";
-import { useLive } from "../live";
+import { useLiveMeta } from "../live";
 import { fmt } from "../util";
 import { replaceHash } from "../route";
 import { Page, View } from "./shell";
@@ -135,7 +135,7 @@ function pickDefault(ms: Meter[]): number | null {
 }
 
 export default function Usage({ params, onNav }: { params: string[]; onNav: (v: View, p?: (string | number)[]) => void }) {
-  const { configVersion } = useLive();
+  const { configVersion } = useLiveMeta();
   const meters = useFetch(() => api.meters("?include_ignored=false"), [configVersion]);
   const [sel, setSel] = useState<number | null>(params[0] ? Number(params[0]) : null);
   const initialView = params[1] && isPeriodView(params[1]) ? params[1] : "week";
