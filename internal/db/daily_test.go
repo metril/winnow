@@ -17,11 +17,13 @@ func addHourlyCum(t *testing.T, d *DB, id int64, hours int, cum0, perHour float6
 	}
 }
 
-// addHourlyRef inserts an hourly constant-power reference sample stream.
+// addHourlyRef inserts a constant-power reference sample stream at the worker
+// keepalive's 5-minute cadence — the sparsest a healthy feed can be, and what
+// the bounded gap-fill carry (refCarryLimit) assumes.
 func addHourlyRef(t *testing.T, d *DB, entity string, hours int, powerW float64) {
 	t.Helper()
-	for h := 0; h <= hours; h++ {
-		addRefEntity(t, d, entity, float64(h*60)+0.25, powerW)
+	for m := 0; m <= hours*60; m += 5 {
+		addRefEntity(t, d, entity, float64(m)+0.25, powerW)
 	}
 }
 

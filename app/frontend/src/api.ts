@@ -68,8 +68,15 @@ export interface Health {
 }
 
 export interface PubStatus { last_publish_ts: string | null; last_error: string | null; updated_at: string | null; }
+export interface RefHealth {
+  configured: boolean; last_sample_ts: string | null; stale: boolean;
+  gaps_7d: { start: string; end: string }[];
+}
 export interface Status {
   ha_ok: boolean; mqtt_ok: boolean;
+  ha_reachable?: boolean;
+  reference?: RefHealth;
+  reference_fresh?: boolean;
   mqtt_connected: boolean;
   worker_status?: { mqtt_connected: boolean; detail?: string; updated_at: string };
   publish_status?: Record<string, PubStatus>;
@@ -165,7 +172,9 @@ export interface DailyScreen {
   days: string[]; monitored_kwh: number[]; monitored_avg: number;
   bill_lo: number | null; bill_hi: number | null;
   band_lo: number; band_hi: number;
-  min_days: number; survivors: number; rows: DailyMeterRow[];
+  min_days: number; survivors: number;
+  excluded_days: number; coverage_min: number;
+  rows: DailyMeterRow[];
 }
 export interface IdentifyDaily {
   screen: DailyScreen;

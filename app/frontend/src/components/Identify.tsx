@@ -291,6 +291,14 @@ function DailyScreenCard({ daily, selected, onToggle, cv, onReload }: {
       )}
       <CardBody className="border-t border-border/60">
         <div className="flex flex-wrap items-start gap-x-6 gap-y-1.5 text-micro text-secondary">
+          {daily.screen.excluded_days > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <AlertTriangle size={13} className="text-bad" />
+              {daily.screen.excluded_days} day{daily.screen.excluded_days === 1 ? "" : "s"} excluded — the monitored
+              reference feed wasn't flowing (coverage below {Math.round((daily.screen.coverage_min ?? 0.9) * 100)}%),
+              so those days carry no evidence.
+            </span>
+          )}
           {cv != null && cv < 0.25 && (
             <span className="inline-flex items-center gap-1.5">
               <AlertTriangle size={13} className="text-gold" />

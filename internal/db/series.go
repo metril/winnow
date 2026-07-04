@@ -149,21 +149,22 @@ func (d *DB) MultiSeries(ctx context.Context, ids []int64, since, until *time.Ti
 }
 
 // AggregateSeries returns the TOTAL monitored power over a window: per entity
-// last-value-carried-forward on a bucket grid (TimescaleDB gapfill+locf), summed
-// across the configured set. One entity = that single sensor; many = the sum.
+// carried forward within the staleness bound on a per-minute grid, summed
+// across the configured set, then averaged to the requested bucket. A bucket
+// with no in-bound data is OMITTED — the chart draws a gap where the feed was
+// dead, never a fabricated flat line or a fake 0 W.
 func (d *DB) AggregateSeries(ctx context.Context, entities []string, start, end time.Time, bucket string) ([]MultiSeriesPoint, error) {
 	out := []MultiSeriesPoint{}
 	if len(entities) == 0 {
 		return out, nil
 	}
-	q := fmt.Sprintf(`
-WITH per_entity AS (
-  SELECT time_bucket_gapfill('%s', ts) AS b, entity_id, locf(avg(power_w)) AS w
-  FROM reference_samples
-  WHERE entity_id = ANY($1) AND ts >= $2 AND ts <= $3
-  GROUP BY b, entity_id)
-SELECT b, sum(coalesce(w,0)) AS power FROM per_entity GROUP BY b ORDER BY b`,
-		bucketInterval(bucket))
+	q := `
+WITH ` + refBoundedCTEs("entity_id = ANY($1) AND ts >= $2 AND ts <= $3") + `,
+per_min AS (
+  SELECT mt, CASE WHEN count(w) > 0 THEN coalesce(sum(w), 0) END AS w
+  FROM per_entity GROUP BY mt)
+SELECT time_bucket('` + bucketInterval(bucket) + `', mt) AS b, avg(w) AS power
+FROM per_min GROUP BY b ORDER BY b`
 	rows, err := d.pool.Query(ctx, q, entities, start, end)
 	if err != nil {
 		return nil, err
@@ -171,11 +172,14 @@ SELECT b, sum(coalesce(w,0)) AS power FROM per_entity GROUP BY b ORDER BY b`,
 	defer rows.Close()
 	for rows.Next() {
 		var b time.Time
-		var p float64
+		var p *float64
 		if err := rows.Scan(&b, &p); err != nil {
 			return nil, err
 		}
-		out = append(out, MultiSeriesPoint{Bucket: b.UTC().Format(time.RFC3339Nano), Value: round(p, 1)})
+		if p == nil {
+			continue // feed dead for this whole bucket → gap
+		}
+		out = append(out, MultiSeriesPoint{Bucket: b.UTC().Format(time.RFC3339Nano), Value: round(*p, 1)})
 	}
 	return out, rows.Err()
 }

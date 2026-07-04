@@ -94,7 +94,12 @@ function StatusRail() {
   return (
     <div className="mx-2.5 mb-1 rounded-lg border border-border bg-surface/60 p-1">
       {row(capAlive ? "good" : "bad", "Capture", `${rate}/min`)}
-      {row(status.data?.ha_ok ? "good" : "off", "HA", status.data?.ha_ok ? "ok" : "—")}
+      {/* reachable-but-stale is the dangerous state: HA answers while the
+          monitored feed silently died — show it as a warning, not green */}
+      {row(
+        status.data?.ha_ok ? (status.data?.reference?.configured && status.data.reference.stale ? "warn" : "good") : "off",
+        "HA",
+        status.data?.ha_ok ? (status.data?.reference?.configured && status.data.reference.stale ? "feed stale" : "ok") : "—")}
       {/* reachable-but-not-connected is a warn: the worker's session is what
           actually publishes, a TCP dial succeeding means nothing by itself */}
       {row(status.data?.mqtt_connected ? "good" : status.data?.mqtt_ok ? "warn" : "off", "MQTT",
