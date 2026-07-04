@@ -65,7 +65,10 @@ function ConsumptionChart({ d, yMax, height = 300 }: { d: Consumption; yMax?: nu
         <Bar name={`metered (${d.unit})`} dataKey="value" fill={ch.brand} radius={[3, 3, 0, 0]} isAnimationActive={false} />
         {hasMon && <Line name="monitored (kWh)" dataKey="monitored" stroke={ch.gold} strokeWidth={1.5}
           dot={{ r: 2 }} activeDot={{ r: 4 }} isAnimationActive={false} />}
-        {hasUtl && <Line name="bill est. (kWh)" dataKey="utility" stroke={ch.axis} strokeDasharray="4 3" strokeWidth={1.5}
+        {/* target-line idiom: full-contrast ink, dashed — ch.axis (tick gray)
+            was invisible against the card background */}
+        {hasUtl && <Line name="bill est. (kWh)" dataKey="utility" stroke={ch.text} strokeOpacity={0.75}
+          strokeDasharray="6 4" strokeWidth={1.5}
           dot={false} activeDot={{ r: 3 }} isAnimationActive={false} />}
       </ComposedChart>
     </ResponsiveContainer>

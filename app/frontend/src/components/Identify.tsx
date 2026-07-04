@@ -245,7 +245,7 @@ function DailyScreenCard({ daily, selected, onToggle, cv, onReload }: {
             <Legend />
             <Line name="monitored" dataKey="monitored" stroke={ch.gold} strokeWidth={2}
               dot={{ r: 2 }} activeDot={{ r: 4 }} isAnimationActive={false} />
-            {hasFlat && <Line name="bill flat est." dataKey="flat" stroke={ch.axis} strokeDasharray="4 3" strokeWidth={1.5}
+            {hasFlat && <Line name="bill flat est." dataKey="flat" stroke={ch.text} strokeOpacity={0.75} strokeDasharray="6 4" strokeWidth={1.5}
               dot={{ r: 2 }} activeDot={{ r: 4 }} isAnimationActive={false} connectNulls />}
             {hasShaped && <Line name="bill shaped est." dataKey="shaped" stroke={ch.faint} strokeDasharray="2 3" strokeWidth={1.5}
               dot={{ r: 2 }} activeDot={{ r: 4 }} isAnimationActive={false} connectNulls />}
