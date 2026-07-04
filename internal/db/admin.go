@@ -9,7 +9,7 @@ import (
 // adminTables is the fixed set of tables the maintenance page reports on, in a
 // sensible display order (biggest/most-interesting first).
 var adminTables = []string{
-	"readings", "readings_1m", "reference_samples",
+	"readings", "readings_1m", "readings_1h", "reference_samples",
 	"meter_index", "meter_source", "meters", "test_windows", "sdr_devices",
 }
 
@@ -123,7 +123,10 @@ func (d *DB) RunMaintenance(ctx context.Context, op string) error {
 		}
 		return nil
 	case "refresh_agg":
-		_, err := d.pool.Exec(ctx, `CALL refresh_continuous_aggregate('readings_1m', NULL, NULL)`)
+		if _, err := d.pool.Exec(ctx, `CALL refresh_continuous_aggregate('readings_1m', NULL, NULL)`); err != nil {
+			return err
+		}
+		_, err := d.pool.Exec(ctx, `CALL refresh_continuous_aggregate('readings_1h', NULL, NULL)`)
 		return err
 	case "compress":
 		// compress every chunk past the policy horizon that isn't already compressed

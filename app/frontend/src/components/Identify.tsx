@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import { Crosshair, AlertTriangle, Settings, Trophy, Check, X, RotateCcw, CalendarDays, FlaskConical } from "lucide-react";
+import { Crosshair, AlertTriangle, Settings, Trophy, Check, X, RotateCcw, CalendarDays, FlaskConical, CheckCircle2, BarChart3 } from "lucide-react";
 import { Brush, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, CorrRow, DailyMeterRow, IdentifyDaily } from "../api";
 import { useLive } from "../live";
 import { useFetch } from "../fetch";
 import { fmt } from "../util";
-import { Page } from "./shell";
+import { Page, View } from "./shell";
 import { Card, CardHeader, CardBody, Button, Segmented, Badge, EmptyState, Skeleton, Table, Th, Td, InfoHint, Input } from "../ui";
 import { OverlayChart, ConfidenceBar } from "./charts";
 import { useChartTheme } from "./chartTheme";
@@ -34,7 +34,7 @@ async function loadAll(hours: number, bucket: string, commodity: string, selecte
   return { d, daily, ref, series, shown };
 }
 
-export default function Identify() {
+export default function Identify({ onNav }: { onNav?: (v: View, p?: (string | number)[]) => void }) {
   const { configVersion } = useLive();
   const [hours, setHours] = useState(6);
   const [bucket, setBucket] = useState("auto");
@@ -100,8 +100,24 @@ export default function Identify() {
         </Card>
       )}
 
+      {(() => {
+        const mine = ranking.find((r) => r.is_mine);
+        return mine && (
+          <Card variant="alert">
+            <CardBody className="flex flex-wrap items-center gap-3">
+              <CheckCircle2 size={18} className="text-good" />
+              <div className="flex-1 text-small">
+                <div className="font-medium text-text">Confirmed: #{mine.endpoint_id} is your meter</div>
+                <div className="text-secondary">The hunt is over — this page stays useful for re-checks, but your day-to-day view is Usage.</div>
+              </div>
+              <Button variant="primary" icon={<BarChart3 size={15} />} onClick={() => onNav?.("usage", [mine.endpoint_id])}>View usage</Button>
+            </CardBody>
+          </Card>
+        );
+      })()}
+
       {!data ? <Skeleton className="h-40" />
-        : winner ? <WinnerCard r={winner} monitoredKwh={monitoredKwh} windowLabel={rangeLabel} onReload={reload} />
+        : winner ? <WinnerCard r={winner} monitoredKwh={monitoredKwh} windowLabel={rangeLabel} onReload={reload} confirmed={ranking.some((r) => r.is_mine)} />
           : <Card><CardBody><EmptyState icon={<Crosshair size={22} />} title="No candidates yet">Switch a known load on and off, then Analyze.</EmptyState></CardBody></Card>}
 
       {data?.daily && data.daily.screen.days.length >= data.daily.screen.min_days && (
@@ -337,7 +353,7 @@ function applyCalibration(r: CorrRow, mult: number) {
   return api.patchMeter(r.endpoint_id, { pub_multiplier: mult, pub_unit: "kWh" });
 }
 
-function WinnerCard({ r, monitoredKwh, windowLabel, onReload }: { r: CorrRow; monitoredKwh?: number; windowLabel: string; onReload: () => void }) {
+function WinnerCard({ r, monitoredKwh, windowLabel, onReload, confirmed }: { r: CorrRow; monitoredKwh?: number; windowLabel: string; onReload: () => void; confirmed?: boolean }) {
   const conf = r.confidence ?? 0;
   const strong = conf > 0.6;
   const meterKwh = r.meter_energy_kwh;
@@ -346,7 +362,7 @@ function WinnerCard({ r, monitoredKwh, windowLabel, onReload }: { r: CorrRow; mo
       <CardBody className="flex flex-col gap-4 sm:flex-row sm:items-start">
         <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gold/12 text-gold"><Trophy size={26} /></div>
         <div className="flex-1">
-          <div className="flex items-center gap-2 text-small text-secondary">{strong ? "Most likely your meter" : "Top candidate (weak — run a load test)"}</div>
+          <div className="flex items-center gap-2 text-small text-secondary">{confirmed ? (r.is_mine ? "Your confirmed meter" : "Top candidate this window") : strong ? "Most likely your meter" : "Top candidate (weak — run a load test)"}</div>
           <div className="mt-0.5 flex items-center gap-2">
             <span className="text-h1 mono text-text">#{r.endpoint_id}</span>
             <Badge tone={r.commodity === "electric" ? "gold" : "brand"}>{r.commodity}</Badge>

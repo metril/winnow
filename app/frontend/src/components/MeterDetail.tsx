@@ -4,16 +4,17 @@ import { Star, Radio, EyeOff, Eye, Terminal, Download, CalendarClock, Copy, Gaug
 import { api, HeatCell, DailyPoint, Benchmark, UtilityCompare } from "../api";
 import { fmt, shortTs, tsMs, since, copyText } from "../util";
 import { Heatmap } from "./charts";
+import { ConsumptionBrowser } from "./Usage";
 import { useChartTheme } from "./chartTheme";
 import { Button, Input, Field, Badge, Tabs, Segmented, Skeleton, EmptyState, IconButton, InfoHint, useToast } from "../ui";
 
-type DTab = "timeline" | "heatmap" | "daily" | "utility";
+type DTab = "usage" | "timeline" | "heatmap" | "daily" | "utility";
 const tickFmt = (t: number) => shortTs(new Date(t).toISOString()).slice(5, 16);
 
 export default function MeterDetail({ id, hours, onChange }: { id: number; hours: number; onChange?: () => void }) {
   const toast = useToast();
   const ch = useChartTheme();
-  const [tab, setTab] = useState<DTab>("timeline");
+  const [tab, setTab] = useState<DTab>("usage");
   const [bucket, setBucket] = useState("1h");
   const [data, setData] = useState<any>(null);
   const [cmd, setCmd] = useState("");
@@ -32,8 +33,10 @@ export default function MeterDetail({ id, hours, onChange }: { id: number; hours
       <div className="flex flex-wrap items-center gap-3">
         <span className="id-pill text-small">#{id}</span>
         {ann.publish ? <Badge tone="gold"><Radio size={11} /> publishing</Badge> : ann.is_mine ? <Badge tone="brand">tracked</Badge> : null}
-        <div className="ml-auto"><Tabs tabs={[{ id: "timeline", label: "Timeline" }, { id: "heatmap", label: "Heatmap" }, { id: "daily", label: "Daily" }, { id: "utility", label: "Utility" }]} value={tab} onChange={setTab} /></div>
+        <div className="ml-auto"><Tabs tabs={[{ id: "usage", label: "Usage" }, { id: "timeline", label: "Timeline" }, { id: "heatmap", label: "Heatmap" }, { id: "daily", label: "Daily" }, { id: "utility", label: "Utility" }]} value={tab} onChange={setTab} /></div>
       </div>
+
+      {tab === "usage" && <ConsumptionBrowser id={id} />}
 
       {tab === "timeline" && (
         <div className="space-y-3">
