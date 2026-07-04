@@ -1,7 +1,7 @@
 import { ReactNode, useState } from "react";
 import {
   LayoutDashboard, Crosshair, Zap, Gauge, RadioTower, Settings as SettingsIcon,
-  ChevronLeft, ChevronRight, Radio, Database, Satellite, Receipt,
+  ChevronLeft, ChevronRight, Radio, Database, Satellite, Receipt, BarChart3,
 } from "lucide-react";
 import { api } from "../api";
 import { useLive, perMin } from "../live";
@@ -10,10 +10,10 @@ import { ThemeToggle } from "../theme";
 import { cx, Dot } from "../ui";
 import { fmt } from "../util";
 
-export type View = "overview" | "identify" | "meters" | "loadtests" | "devices" | "agents" | "maintenance" | "settings" | "utility";
+export type View = "overview" | "usage" | "identify" | "meters" | "loadtests" | "devices" | "agents" | "maintenance" | "settings" | "utility";
 
 const GROUPS: { label: string | null; items: { id: View; label: string; icon: any }[] }[] = [
-  { label: null, items: [{ id: "overview", label: "Overview", icon: LayoutDashboard }] },
+  { label: null, items: [{ id: "overview", label: "Overview", icon: LayoutDashboard }, { id: "usage", label: "Usage", icon: BarChart3 }] },
   { label: "Find my meter", items: [{ id: "identify", label: "Identify", icon: Crosshair }, { id: "loadtests", label: "Load tests", icon: Zap }] },
   { label: "Inventory", items: [{ id: "meters", label: "Meters", icon: Gauge }, { id: "devices", label: "Devices", icon: RadioTower }] },
   { label: "Billing", items: [{ id: "utility", label: "Utility bill", icon: Receipt }] },

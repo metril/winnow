@@ -149,6 +149,35 @@ func (s *server) handleMeterDetail(w http.ResponseWriter, r *http.Request) {
 		"points": series.Points, "deltas": series.Deltas, "annotation": meter})
 }
 
+// handleConsumption serves one calendar-period page of a meter's usage (the
+// Usage view): hours of a day, days of a week/month, or months of a year, with
+// server-computed prev/next anchors so the client cycles periods without any
+// calendar math.
+func (s *server) handleConsumption(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		badReq(w, "bad id")
+		return
+	}
+	q := r.URL.Query()
+	view := q.Get("view")
+	if view == "" {
+		view = "day"
+	}
+	compare := map[string]bool{}
+	for _, c := range strings.Split(q.Get("compare"), ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			compare[c] = true
+		}
+	}
+	res, err := s.d.Consumption(r.Context(), id, view, q.Get("anchor"), compare)
+	if err != nil {
+		badReq(w, err.Error())
+		return
+	}
+	writeJSON(w, res)
+}
+
 func (s *server) handleMeterPatch(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -218,7 +247,11 @@ func (s *server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	since := timeParam(r, "since", time.Now().Add(-7*24*time.Hour))
-	rows, err := s.d.MeterReadings(r.Context(), id, since, nil)
+	var until *time.Time
+	if r.URL.Query().Get("until") != "" {
+		until = timeParam(r, "until", time.Now())
+	}
+	rows, err := s.d.MeterReadings(r.Context(), id, since, until)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

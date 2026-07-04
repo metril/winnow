@@ -101,6 +101,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/meters/{id}", s.handleMeterDetail)
 	mux.HandleFunc("PATCH /api/meters/{id}", s.handleMeterPatch)
 	mux.HandleFunc("DELETE /api/meters/{id}", s.handleDeleteMeter)
+	mux.HandleFunc("GET /api/meters/{id}/consumption", s.handleConsumption)
 	mux.HandleFunc("GET /api/meters/{id}/filter-command", s.handleFilterCommand)
 	mux.HandleFunc("GET /api/meters/{id}/export.csv", s.handleExportCSV)
 	mux.HandleFunc("GET /api/meters/{id}/profile", s.handleProfile)

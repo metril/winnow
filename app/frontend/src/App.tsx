@@ -1,9 +1,9 @@
-import { useState } from "react";
 import { ThemeProvider } from "./theme";
 import { ToastProvider } from "./ui";
 import { LiveProvider } from "./live";
 import { TopLoadingBar } from "./fetch";
-import { AppShell, View } from "./components/shell";
+import { AppShell } from "./components/shell";
+import { useHashRoute } from "./route";
 import Overview from "./components/Overview";
 import Identify from "./components/Identify";
 import Meters from "./components/Meters";
@@ -13,20 +13,23 @@ import Agents from "./components/Agents";
 import Maintenance from "./components/Maintenance";
 import Settings from "./components/Settings";
 import Utility from "./components/Utility";
+import Usage from "./components/Usage";
 
 export default function App() {
-  const [view, setView] = useState<View>("overview");
+  const [route, nav] = useHashRoute();
+  const { view, params } = route;
   return (
     <ThemeProvider>
       <ToastProvider>
         <LiveProvider>
           <TopLoadingBar />
-          <AppShell view={view} onNav={setView}>
-            {view === "overview" && <Overview onNav={setView} />}
-            {view === "identify" && <Identify />}
-            {view === "meters" && <Meters />}
+          <AppShell view={view} onNav={nav}>
+            {view === "overview" && <Overview onNav={nav} />}
+            {view === "usage" && <Usage params={params} onNav={nav} />}
+            {view === "identify" && <Identify onNav={nav} />}
+            {view === "meters" && <Meters initialDetail={params[0] ? Number(params[0]) : null} />}
             {view === "loadtests" && <LoadTests />}
-            {view === "utility" && <Utility onNav={setView} />}
+            {view === "utility" && <Utility onNav={nav} />}
             {view === "devices" && <Devices />}
             {view === "agents" && <Agents />}
             {view === "maintenance" && <Maintenance />}

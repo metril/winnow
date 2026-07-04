@@ -157,6 +157,34 @@ export interface ProfilePoint { key: number; value: number; }
 export interface HeatCell { dow: number; hour: number; value: number; }
 export interface DailyPoint { day: string; value: number; }
 
+export interface ConsumptionBucket {
+  start: string;
+  label: string;
+  value: number | null;
+  packets: number;
+  monitored?: number;
+  utility_est?: number;
+}
+export interface Consumption {
+  endpoint_id: number;
+  view: "day" | "week" | "month" | "year";
+  tz: string;
+  anchor: string;
+  period_start: string;
+  period_end: string;
+  prev_anchor: string | null;
+  next_anchor: string | null;
+  granularity: string;
+  unit: string;
+  multiplier: number;
+  calibrated: boolean;
+  buckets: ConsumptionBucket[];
+  total: number | null;
+  avg_per_day: number | null;
+  prev_total: number | null;
+  coverage: number;
+}
+
 async function j<T>(url: string, opts?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
@@ -172,6 +200,9 @@ export const api = {
     j<Meter>(`/api/meters/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteMeter: (id: number, purge: boolean) =>
     j<any>(`/api/meters/${id}${purge ? "?purge=true" : ""}`, { method: "DELETE" }),
+  consumption: (id: number, view: string, anchor?: string, compare?: string) =>
+    j<Consumption>(`/api/meters/${id}/consumption?view=${view}` +
+      (anchor ? `&anchor=${anchor}` : "") + (compare ? `&compare=${compare}` : "")),
   filterCmd: (id: number) => j<any>(`/api/meters/${id}/filter-command`),
   profile: (id: number, type: string, days = 14) =>
     j<any>(`/api/meters/${id}/profile?type=${type}&days=${days}`),

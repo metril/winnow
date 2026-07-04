@@ -70,11 +70,80 @@ func main() {
 	w.reloadConfig(ctx)
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); w.listenLoop(ctx) }()
 	go func() { defer wg.Done(); w.haLoop(ctx) }()
 	go func() { defer wg.Done(); w.utilityLoop(ctx) }()
+	go func() { defer wg.Done(); w.caggBackfillLoop(ctx) }()
 	wg.Wait()
+}
+
+// caggBackfillLoop materializes readings_1h over stored history exactly once,
+// in 7-day ranges, resumable via a settings watermark, then exits. It runs here
+// rather than in InitSchema because a full refresh over weeks of readings would
+// hold the schema advisory lock and stall capture ingest at deploy time. The
+// aggregate's refresh policy owns everything newer than 48h, and real-time
+// aggregation answers for any not-yet-materialized range in the meantime — this
+// loop just makes old history cheap to read.
+func (w *worker) caggBackfillLoop(ctx context.Context) {
+	const key = "readings_1h_refreshed_to"
+	const step = 7 * 24 * time.Hour
+	for ctx.Err() == nil {
+		settings, err := w.d.GetSettings(ctx)
+		if err != nil {
+			if !sleepCtx(ctx, 30*time.Second) {
+				return
+			}
+			continue
+		}
+		var from time.Time
+		if v := settings[key]; v != "" {
+			if t, perr := time.Parse(time.RFC3339, v); perr == nil {
+				from = t
+			}
+		}
+		if from.IsZero() {
+			oldest, ok := w.d.OldestReadingTS(ctx)
+			if !ok {
+				// fresh install: nothing to backfill, the policy owns the future
+				_ = w.d.SetSetting(ctx, key, time.Now().UTC().Format(time.RFC3339))
+				return
+			}
+			from = oldest.UTC().Truncate(time.Hour)
+		}
+		target := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Hour)
+		if !from.Before(target) {
+			return // caught up to the policy's start_offset — done for good
+		}
+		to := from.Add(step)
+		if to.After(target) {
+			to = target
+		}
+		if err := w.d.RefreshReadings1h(ctx, from, to); err != nil {
+			log.Printf("[worker] readings_1h backfill %s..%s: %v", from.Format(time.RFC3339), to.Format(time.RFC3339), err)
+			if !sleepCtx(ctx, 30*time.Second) {
+				return
+			}
+			continue
+		}
+		if err := w.d.SetSetting(ctx, key, to.Format(time.RFC3339)); err != nil {
+			log.Printf("[worker] readings_1h watermark: %v", err)
+		}
+		log.Printf("[worker] readings_1h materialized through %s", to.Format(time.RFC3339))
+		if !sleepCtx(ctx, 2*time.Second) { // let ingest breathe between ranges
+			return
+		}
+	}
+}
+
+// sleepCtx waits d or until ctx is done; false = shutting down.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
 }
 
 func mustDB(ctx context.Context) *db.DB {

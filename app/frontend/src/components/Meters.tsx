@@ -12,7 +12,7 @@ import { TrackStar, PublishToggle } from "./MeterActions";
 
 const RANGES = [{ value: 1, label: "1h" }, { value: 6, label: "6h" }, { value: 24, label: "24h" }, { value: 72, label: "3d" }, { value: 168, label: "7d" }];
 
-export default function Meters() {
+export default function Meters({ initialDetail = null }: { initialDetail?: number | null }) {
   const { configVersion } = useLive();
   const toast = useToast();
   const [hours, setHours] = useState(24);
@@ -22,7 +22,7 @@ export default function Meters() {
   const [trackedOnly, setTrackedOnly] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [mode, setMode] = useState<"delta" | "cumulative">("delta");
-  const [detail, setDetail] = useState<number | null>(null);
+  const [detail, setDetail] = useState<number | null>(initialDetail);
   const [del, setDel] = useState<Meter | null>(null);
   const [purge, setPurge] = useState(false);
   const [hidden, setHidden] = useState<Set<string>>(new Set());

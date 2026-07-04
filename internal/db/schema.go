@@ -155,6 +155,30 @@ var timescaleSteps = []string{
 	`ALTER TABLE readings SET (timescaledb.compress, timescaledb.compress_segmentby = 'endpoint_id')`,
 	`SELECT add_compression_policy('readings', INTERVAL '7 days', if_not_exists => true)`,
 	`SELECT add_retention_policy('readings', INTERVAL '180 days', if_not_exists => true)`,
+	// readings_1h backs everything calendar-shaped (usage browser, daily screens,
+	// leaderboards): hourly counter maxima are the smallest unit all of those
+	// need, and reading them from a cagg keeps those queries off compressed raw
+	// chunks. Built directly on readings (not on readings_1m) — hierarchical
+	// caggs exclude the parent's real-time region during materialization, and the
+	// direct form is the same proven pattern as readings_1m.
+	`CREATE MATERIALIZED VIEW IF NOT EXISTS readings_1h
+	   WITH (timescaledb.continuous) AS
+	   SELECT endpoint_id,
+	          time_bucket('1 hour', ts) AS bucket,
+	          min(consumption) AS min_c,
+	          max(consumption) AS max_c,
+	          count(*)         AS n
+	   FROM readings
+	   WHERE consumption IS NOT NULL AND endpoint_id IS NOT NULL
+	   GROUP BY endpoint_id, bucket
+	   WITH NO DATA`,
+	`SELECT add_continuous_aggregate_policy('readings_1h',
+	     start_offset => INTERVAL '48 hours',
+	     end_offset   => INTERVAL '1 hour',
+	     schedule_interval => INTERVAL '30 minutes',
+	     if_not_exists => true)`,
+	`ALTER MATERIALIZED VIEW readings_1h SET (timescaledb.materialized_only = false)`,
+	`SELECT add_retention_policy('readings_1h', INTERVAL '180 days', if_not_exists => true)`,
 }
 
 // InitSchema creates the base schema (idempotent) and best-effort TimescaleDB
