@@ -207,19 +207,32 @@ func genSelfSignedCert() (certPEM, keyPEM []byte, err error) {
 	return certPEM, keyPEM, nil
 }
 
+// agentReadIdle bounds every read from an agent connection. Updated agents
+// send a keepalive ping every minute, so a connection silent past this window
+// is dead (half-open TCP), not quiet — close it and let the agent reconnect.
+// Var, not const, so tests can shrink it.
+var agentReadIdle = 5 * time.Minute
+
 // wsConn adapts a coder/websocket connection to agentwire.Conn (one binary
-// message per frame).
+// message per frame). Each read is bounded by agentReadIdle so a half-open
+// connection can never hang the ingest loop silently (the same invariant as
+// internal/ha's stream watchdog).
 type wsConn struct {
 	c   *websocket.Conn
 	ctx context.Context
 }
 
 func (w wsConn) ReadMsg() ([]byte, error) {
-	_, data, err := w.c.Read(w.ctx)
+	rctx, cancel := context.WithTimeout(w.ctx, agentReadIdle)
+	defer cancel()
+	_, data, err := w.c.Read(rctx)
 	return data, err
 }
 func (w wsConn) WriteMsg(b []byte) error {
-	return w.c.Write(w.ctx, websocket.MessageBinary, b)
+	// bounded so a config push to a stuck agent can't hang its goroutine
+	wctx, cancel := context.WithTimeout(w.ctx, 30*time.Second)
+	defer cancel()
+	return w.c.Write(wctx, websocket.MessageBinary, b)
 }
 
 // handleAgentWS terminates a remote capture agent: NaCl handshake (mutual
@@ -295,6 +308,10 @@ func (s *server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 			if msg.Reading != nil {
 				_ = s.d.InsertReading(ctx, msg.Reading.Reading, msg.Reading.Raw)
 			}
+		case "ping":
+			// connection keepalive only — deliberately NOT a heartbeat write:
+			// capture_heartbeat.updated_at must keep meaning "data flowed", or
+			// pings would mask a dead SDR from source_down and alive badges
 		case "heartbeat":
 			if hb := msg.Heartbeat; hb != nil {
 				ts, _ := time.Parse(time.RFC3339Nano, hb.LastTS)

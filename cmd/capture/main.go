@@ -431,14 +431,29 @@ func superviseSDR(ctx context.Context, d Sink, source string, p scanParams, up *
 			continue
 		}
 		up.Store(true) // pipeline live; healthy even if the meters are quiet
-		ingest(ctx, d, source, stdout)
+		stalled, pkts := ingest(ctx, d, source, stdout)
 		up.Store(false)
+		if stalled {
+			log.Printf("[capture] source=%s no rtlamr output in %s (%d pkts this run) — restarting pipeline (wedged SDR?)", source, captureSilenceTimeout, pkts)
+		}
 
+		// rtlamr may still be running (a stall, or an insert-error return while
+		// it kept printing into a filling pipe) — kill unconditionally or Wait
+		// blocks forever. Killing an already-exited process is a no-op.
+		_ = amr.Process.Kill()
 		_ = amr.Wait()
 		_ = tcp.Process.Kill()
 		_ = tcp.Wait()
 		if ctx.Err() != nil {
 			return // a cancel (shutdown/config change) is neutral to the gate
+		}
+		if noteDeadRun(source, stalled, pkts) {
+			// Respawns aren't reviving this device. Exit and let Docker's
+			// restart policy recreate the container — the operator's proven
+			// manual fix, automated and visible in `docker ps` restart counts.
+			log.Printf("[capture] source=%s dead after %d consecutive silent runs — exiting for a container restart", source, captureMaxDeadRuns)
+			exitFn(1)
+			return
 		}
 		if time.Since(start) >= gateHealthy {
 			bus.ok() // came up and stayed up — clear the penalty
@@ -488,7 +503,7 @@ func superviseMock(ctx context.Context, d Sink, source string) {
 	for ctx.Err() == nil {
 		r, w := io.Pipe()
 		go func() { mockStream(ctx, w); w.Close() }()
-		ingest(ctx, d, source, r)
+		_, _ = ingest(ctx, d, source, r)
 		select {
 		case <-ctx.Done():
 		case <-time.After(2 * time.Second):
@@ -496,38 +511,116 @@ func superviseMock(ctx context.Context, d Sink, source string) {
 	}
 }
 
+// captureSilenceTimeout is how long ingest tolerates ZERO rtlamr output before
+// declaring the pipeline stalled. A wedged RTL-SDR keeps rtl_tcp alive while
+// delivering no samples, so rtlamr goes silent without exiting — the failure
+// that used to block the scanner forever and need a manual container restart.
+// Var (not const) so tests can shrink it; override with CAPTURE_SILENCE_TIMEOUT.
+var captureSilenceTimeout = func() time.Duration {
+	if v := os.Getenv("CAPTURE_SILENCE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		log.Printf("[capture] invalid CAPTURE_SILENCE_TIMEOUT %q; using 5m", v)
+	}
+	return 5 * time.Minute
+}()
+
+// captureMaxDeadRuns is how many consecutive zero-packet stalls to retry
+// in-process before exiting so Docker recreates the container (the operator's
+// proven manual remedy, automated).
+const captureMaxDeadRuns = 3
+
+// exitFn is os.Exit, injectable for tests.
+var exitFn = os.Exit
+
+// deadRuns counts consecutive zero-packet stalls per source. It is process-
+// global, NOT per-supervisor: the manager's bus rescan tears down and restarts
+// supervisors — typically exactly while a wedged dongle sits in gate backoff —
+// and a fresh supervisor must not restart the escalation count from zero.
+var deadRuns = struct {
+	mu sync.Mutex
+	m  map[string]int
+}{m: map[string]int{}}
+
+// noteDeadRun records one pipeline run's outcome and reports whether the
+// source has now been dead (stalled with zero packets) captureMaxDeadRuns times
+// in a row. Only dead runs count: a wedge after real data, or a clean
+// subprocess exit, resets the streak — respawning is working.
+func noteDeadRun(source string, stalled bool, pkts int64) bool {
+	deadRuns.mu.Lock()
+	defer deadRuns.mu.Unlock()
+	if stalled && pkts == 0 {
+		deadRuns.m[source]++
+		return deadRuns.m[source] >= captureMaxDeadRuns
+	}
+	delete(deadRuns.m, source)
+	return false
+}
+
 // ingest reads rtlamr JSON lines, stores them, and heartbeats every 25 rows.
-func ingest(ctx context.Context, d Sink, source string, stdout io.Reader) {
-	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	var n int64
+// Every read is bounded by captureSilenceTimeout: total silence past the window
+// returns stalled=true so the supervisor can kill and respawn the pipeline —
+// a quiet-but-open pipe can never block capture forever again. Heartbeats are
+// only written on data (never on the watchdog), so `source_down` and the alive
+// badges keep meaning "data flowed", not "the process exists".
+func ingest(ctx context.Context, d Sink, source string, stdout io.Reader) (stalled bool, pkts int64) {
+	done := make(chan struct{})
+	defer close(done)
+	lines := make(chan string)
+	go func() {
+		sc := bufio.NewScanner(stdout)
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		for sc.Scan() {
+			select {
+			case lines <- sc.Text():
+			case <-done:
+				return
+			}
+		}
+		close(lines)
+	}()
+
 	lastTS := time.Now().UTC()
 	// Seed a heartbeat so the source shows up immediately (a near-silent dongle
 	// then correctly goes stale rather than staying invisible until 25 packets).
-	_ = d.UpdateHeartbeat(ctx, source, lastTS, n)
-	for sc.Scan() {
-		if ctx.Err() != nil {
-			return
-		}
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		r, ok := ert.ExtractReading([]byte(line), source)
-		if !ok {
-			continue
-		}
-		if err := d.InsertReading(ctx, r, line); err != nil {
-			log.Printf("[ingest:%s] insert error: %v", source, err)
-			return // reset the pipeline
-		}
-		lastTS = r.TS
-		n++
-		if n%25 == 0 {
-			_ = d.UpdateHeartbeat(ctx, source, lastTS, n)
+	_ = d.UpdateHeartbeat(ctx, source, lastTS, pkts)
+	idle := time.NewTimer(captureSilenceTimeout)
+	defer idle.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false, pkts
+		case <-idle.C:
+			return true, pkts
+		case text, ok := <-lines:
+			if !ok {
+				_ = d.UpdateHeartbeat(ctx, source, lastTS, pkts)
+				return false, pkts
+			}
+			if !idle.Stop() {
+				<-idle.C
+			}
+			idle.Reset(captureSilenceTimeout)
+			line := strings.TrimSpace(text)
+			if line == "" {
+				continue
+			}
+			r, ok := ert.ExtractReading([]byte(line), source)
+			if !ok {
+				continue
+			}
+			if err := d.InsertReading(ctx, r, line); err != nil {
+				log.Printf("[ingest:%s] insert error: %v", source, err)
+				return false, pkts // reset the pipeline
+			}
+			lastTS = r.TS
+			pkts++
+			if pkts%25 == 0 {
+				_ = d.UpdateHeartbeat(ctx, source, lastTS, pkts)
+			}
 		}
 	}
-	_ = d.UpdateHeartbeat(ctx, source, lastTS, n)
 }
 
 // --- helpers ----------------------------------------------------------------
