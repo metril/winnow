@@ -33,6 +33,7 @@ services:
       AGENT_NAME: ${AGENT_NAME:-agent}            # namespaces this agent's sources in the dashboard
       AGENT_SERVER_KEY: ${AGENT_SERVER_KEY:-}     # leave unset for trust-on-first-use (fetched+pinned to /data); set for strict verification
       AGENT_SERVER_FINGERPRINT: ${AGENT_SERVER_FINGERPRINT:-}  # pin the outer TLS cert (from dashboard) — also authenticates the TOFU fetch
+      # CAPTURE_SILENCE_TIMEOUT: 5m               # zero rtlamr output for this long = wedged SDR → pipeline restart (3 dead runs → container restart)
     # Optional CPU pinning on big.LITTLE SoCs (e.g. RK3588 performance cores "4-7").
     # Leave blank/omit on amd64 or uniform CPUs — a wrong cpuset starves rtlamr
     # ("not keeping up with rtl_tcp").

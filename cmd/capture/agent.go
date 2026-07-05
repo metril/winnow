@@ -24,6 +24,10 @@ import (
 	"winnow/internal/model"
 )
 
+// agentPingEvery is the session keepalive cadence; the server's read window is
+// several multiples of this, so an updated agent never times out while idle.
+const agentPingEvery = time.Minute
+
 // runAgent is the remote-capture mode: enumerate local dongles, decode locally,
 // and stream readings to the main app over an encrypted, mutually-authenticated
 // session. Config is pushed by the server (no DB access from the remote host).
@@ -152,14 +156,27 @@ func loadAgentKey() (pub, priv [32]byte) {
 	return pk, p
 }
 
-// captureWS adapts a coder/websocket connection to agentwire.Conn.
+// agentWriteTimeout bounds every frame write. On a half-open socket a write
+// blocks once the TCP buffer fills — and because wsSink serializes writers,
+// one stuck reading write would also wedge the keepalive ping behind its
+// mutex. A bounded write turns that into an error → session teardown →
+// reconnect. Healthy writes flush in milliseconds.
+const agentWriteTimeout = 30 * time.Second
+
+// captureWS adapts a coder/websocket connection to agentwire.Conn. Reads stay
+// unbounded (the server pushes config rarely; silence is normal downstream) —
+// link liveness is the ping writer's job.
 type captureWS struct {
 	c   *websocket.Conn
 	ctx context.Context
 }
 
 func (w captureWS) ReadMsg() ([]byte, error) { _, d, err := w.c.Read(w.ctx); return d, err }
-func (w captureWS) WriteMsg(b []byte) error  { return w.c.Write(w.ctx, websocket.MessageBinary, b) }
+func (w captureWS) WriteMsg(b []byte) error {
+	wctx, cancel := context.WithTimeout(w.ctx, agentWriteTimeout)
+	defer cancel()
+	return w.c.Write(wctx, websocket.MessageBinary, b)
+}
 
 // wsSink streams decoded readings/heartbeats to the server. Writes from multiple
 // dongle goroutines are serialized (coder/websocket forbids concurrent writes).
@@ -242,6 +259,13 @@ func agentSession(ctx context.Context, name, url string, pub, priv, serverPub [3
 	var lastRescan time.Time
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+	// Keepalive: a half-open socket (server restart, NAT drop) otherwise fails
+	// silently — readings buffer into a dead TCP connection for many minutes
+	// before any write errors. A periodic ping forces the failure to surface,
+	// which tears the session down into the 5s reconnect loop. The server
+	// discards pings; they never count as capture data.
+	ping := time.NewTicker(agentPingEvery)
+	defer ping.Stop()
 	for {
 		select {
 		case <-sctx.Done():
@@ -252,6 +276,10 @@ func agentSession(ctx context.Context, name, url string, pub, priv, serverPub [3
 			if msg.Type == "config" {
 				lastCfg = msg.Config
 				reconcileAgent(sctx, sink, running, byIndex, lastCfg)
+			}
+		case <-ping.C:
+			if err := sink.send(agentwire.Message{Type: "ping"}); err != nil {
+				return fmt.Errorf("keepalive: %w", err)
 			}
 		case <-ticker.C:
 			if !dongleRescanNeeded(running) || time.Since(lastRescan) <= 5*time.Minute {
