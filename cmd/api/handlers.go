@@ -837,9 +837,16 @@ func (s *server) anomaliesWithReference(r *http.Request) ([]db.Anomaly, error) {
 	cfg, _ := s.d.LoadConfig(r.Context())
 	if cfg.ReferenceConfigured() {
 		if rh := s.d.ReferenceHealth(r.Context(), cfg.MonitoredEntities); rh.Stale {
-			detail := "no monitored samples — identification is paused; check the worker and HA connection"
+			detail := "no monitored samples — identification is paused"
 			if rh.LastSampleTS != nil {
-				detail = "no monitored samples since " + *rh.LastSampleTS + " — identification is paused; check the worker and HA connection"
+				detail = "no monitored samples since " + *rh.LastSampleTS + " — identification is paused"
+			}
+			// name the failing stage when the worker has reported one, so the
+			// banner is actionable instead of "check the worker"
+			if ws, ok := s.d.GetWorkerStatus(r.Context()); ok && ws.HAStream != "" && ws.HAStream != "ok" {
+				detail += "; worker: " + ws.HAStream
+			} else {
+				detail += "; check the worker and HA connection"
 			}
 			a = append([]db.Anomaly{{Kind: "reference_stale", Detail: detail}}, a...)
 		}

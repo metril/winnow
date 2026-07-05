@@ -93,9 +93,14 @@ func (d *DB) PublishStatuses(ctx context.Context) map[int64]PubStatus {
 
 // WorkerStatus is the worker's own health report (written as a settings row on
 // state transitions — the API has no direct line to the worker process).
+// HAStream says what the live monitored-power subscription is doing ("ok",
+// "reconnecting: …", "entity resolution failed: …"), so a stale-feed banner
+// can name the failing stage instead of "check the worker".
 type WorkerStatus struct {
 	MQTTConnected bool   `json:"mqtt_connected"`
 	Detail        string `json:"detail,omitempty"`
+	HAStream      string `json:"ha_stream,omitempty"`
+	HALastEventTS string `json:"ha_last_event_ts,omitempty"`
 	UpdatedAt     string `json:"updated_at"`
 }
 

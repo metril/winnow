@@ -11,47 +11,63 @@ import (
 	"github.com/coder/websocket"
 )
 
+// Liveness tuning (vars so tests can shrink them). HA sends nothing while no
+// subscribed state changes, so Stream pings on a schedule (HA answers pong) and
+// bounds every read: a connection silent past wsIdleTimeout is dead, not quiet.
+// Without these, a half-open TCP connection (HA restart, proxy drop) could
+// wedge a caller forever.
+var (
+	wsHandshakeTimeout = 30 * time.Second
+	wsPingEvery        = 2 * time.Minute
+	wsIdleTimeout      = 6 * time.Minute
+)
+
 // authConn dials HA's WebSocket API and completes the auth handshake, returning
 // the open connection plus ctx-bound read/write JSON helpers. Callers must Close
 // the connection. Shared by the live Stream subscription and the short-lived
-// statistics request/response calls.
+// statistics request/response calls. The dial and handshake run under their own
+// deadline so a black-holed connection errors instead of hanging; the returned
+// helpers stay bound to the caller's ctx.
 func authConn(ctx context.Context, base, token string) (*websocket.Conn, func(any) error, func(any) error, error) {
-	c, _, err := websocket.Dial(ctx, wsURL(base), nil)
+	hctx, hcancel := context.WithTimeout(ctx, wsHandshakeTimeout)
+	defer hcancel()
+	c, _, err := websocket.Dial(hctx, wsURL(base), nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	c.SetReadLimit(1 << 24) // statistics responses can be large
-	read := func(v any) error {
-		_, data, err := c.Read(ctx)
+	readCtx := func(rctx context.Context, v any) error {
+		_, data, err := c.Read(rctx)
 		if err != nil {
 			return err
 		}
 		return json.Unmarshal(data, v)
 	}
+	read := func(v any) error { return readCtx(ctx, v) }
 	write := func(v any) error {
 		data, _ := json.Marshal(v)
 		return c.Write(ctx, websocket.MessageText, data)
 	}
-	var msg map[string]any
-	if err := read(&msg); err != nil {
+	fail := func(err error) (*websocket.Conn, func(any) error, func(any) error, error) {
 		c.Close(websocket.StatusInternalError, "")
 		return nil, nil, nil, err
+	}
+	var msg map[string]any
+	if err := readCtx(hctx, &msg); err != nil {
+		return fail(err)
 	}
 	if msg["type"] != "auth_required" {
-		c.Close(websocket.StatusInternalError, "")
-		return nil, nil, nil, fmt.Errorf("unexpected first message: %v", msg["type"])
+		return fail(fmt.Errorf("unexpected first message: %v", msg["type"]))
 	}
-	if err := write(map[string]any{"type": "auth", "access_token": token}); err != nil {
-		c.Close(websocket.StatusInternalError, "")
-		return nil, nil, nil, err
+	authMsg, _ := json.Marshal(map[string]any{"type": "auth", "access_token": token})
+	if err := c.Write(hctx, websocket.MessageText, authMsg); err != nil {
+		return fail(err)
 	}
-	if err := read(&msg); err != nil {
-		c.Close(websocket.StatusInternalError, "")
-		return nil, nil, nil, err
+	if err := readCtx(hctx, &msg); err != nil {
+		return fail(err)
 	}
 	if msg["type"] != "auth_ok" {
-		c.Close(websocket.StatusInternalError, "")
-		return nil, nil, nil, fmt.Errorf("HA auth failed: %v", msg["type"])
+		return fail(fmt.Errorf("HA auth failed: %v", msg["type"]))
 	}
 	return c, read, write, nil
 }
@@ -59,9 +75,11 @@ func authConn(ctx context.Context, base, token string) (*websocket.Conn, func(an
 // Stream connects to HA's WebSocket API, authenticates, subscribes to state
 // changes of all `entities`, and calls onSample(entity_id, sample) for each
 // numeric update. Runs until ctx is cancelled or an error occurs (caller
-// reconnects).
+// reconnects). A ping heartbeat plus a per-read idle deadline guarantee that a
+// dead connection surfaces as an error within wsIdleTimeout — it can never
+// hang silently.
 func Stream(ctx context.Context, base, token string, entities []string, onSample func(string, Sample)) error {
-	c, read, write, err := authConn(ctx, base, token)
+	c, _, write, err := authConn(ctx, base, token)
 	if err != nil {
 		return err
 	}
@@ -76,14 +94,49 @@ func Stream(ctx context.Context, base, token string, entities []string, onSample
 		return err
 	}
 
-	// 3. event loop
+	// 3. heartbeat — HA answers ping with pong, so a healthy-but-quiet link
+	// always carries a frame within the idle window, and a dead one either
+	// errors the write or starves the read deadline below
+	sctx, scancel := context.WithCancel(ctx)
+	defer scancel()
+	pingFail := make(chan error, 1)
+	go func() {
+		t := time.NewTicker(wsPingEvery)
+		defer t.Stop()
+		for id := 2; ; id++ { // ids must increase; 1 was the subscription
+			select {
+			case <-sctx.Done():
+				return
+			case <-t.C:
+				data, _ := json.Marshal(map[string]any{"id": id, "type": "ping"})
+				if err := c.Write(sctx, websocket.MessageText, data); err != nil {
+					select {
+					case pingFail <- err:
+					default:
+					}
+					scancel() // wake the reader so Stream returns promptly
+					return
+				}
+			}
+		}
+	}()
+
+	// 4. event loop
 	for {
-		var ev wsEvent
-		if err := read(&ev); err != nil {
+		rctx, rcancel := context.WithTimeout(sctx, wsIdleTimeout)
+		_, data, err := c.Read(rctx)
+		rcancel()
+		if err != nil {
+			select {
+			case perr := <-pingFail:
+				return fmt.Errorf("heartbeat: %w", perr)
+			default:
+			}
 			return err
 		}
-		if ev.Type != "event" {
-			continue
+		var ev wsEvent
+		if json.Unmarshal(data, &ev) != nil || ev.Type != "event" {
+			continue // pong replies, result acks, or noise
 		}
 		to := ev.Event.Variables.Trigger.ToState
 		ts := to.LastUpdated
