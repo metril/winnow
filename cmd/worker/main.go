@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -36,6 +38,43 @@ type worker struct {
 	utilRestart chan struct{} // signal the utility backfill loop to re-run with new cfg
 
 	aw autoState // auto-window detector state (touched only by the single-threaded HA callback)
+
+	// einfoCache holds the last successfully-resolved entity info (guarded by
+	// mu; written only by haLoop). Units and kinds don't change, so during an
+	// HA restart — when /api/states errors or returns half-loaded entities —
+	// the cache keeps the subscription meaningful instead of silently empty.
+	einfoCache map[string]einfo
+
+	// worker_status is one settings row shared by the MQTT and HA-stream
+	// facts; stMu guards the composed fields so both writers stay merged.
+	stMu          sync.Mutex
+	mqttDetail    string
+	haStreamState string
+	lastRefInsert atomic.Int64 // unix seconds of the last successful reference insert
+}
+
+// putWorkerStatus writes the composed worker_status row. Callers mutate their
+// fields under stMu first; this is transition-driven, never polled.
+func (w *worker) putWorkerStatus(ctx context.Context) {
+	w.stMu.Lock()
+	ws := db.WorkerStatus{MQTTConnected: w.pub.Connected(), Detail: w.mqttDetail, HAStream: w.haStreamState}
+	w.stMu.Unlock()
+	if t := w.lastRefInsert.Load(); t > 0 {
+		ws.HALastEventTS = time.Unix(t, 0).UTC().Format(time.RFC3339)
+	}
+	_ = w.d.SetWorkerStatus(ctx, ws)
+}
+
+// setHAStream records the HA stream state when it CHANGES — the hot path calls
+// this per event, so equal states never touch the DB.
+func (w *worker) setHAStream(ctx context.Context, state string) {
+	w.stMu.Lock()
+	same := w.haStreamState == state
+	w.haStreamState = state
+	w.stMu.Unlock()
+	if !same {
+		w.putWorkerStatus(ctx)
+	}
 }
 
 // autoState is the live state of the baseline-relative auto-window detector.
@@ -188,7 +227,10 @@ func (w *worker) reloadConfig(ctx context.Context) {
 	if !cfg.MQTTConfigured() {
 		detail = "not configured"
 	}
-	_ = w.d.SetWorkerStatus(ctx, db.WorkerStatus{MQTTConnected: w.pub.Connected(), Detail: detail})
+	w.stMu.Lock()
+	w.mqttDetail = detail
+	w.stMu.Unlock()
+	w.putWorkerStatus(ctx)
 	w.refreshPublishSet(ctx)
 	select {
 	case w.haRestart <- struct{}{}:
@@ -325,6 +367,7 @@ func (w *worker) haLoop(ctx context.Context) {
 		w.mu.RUnlock()
 
 		if !cfg.HAConfigured() || !cfg.ReferenceConfigured() {
+			w.setHAStream(ctx, "not configured")
 			if !waitOrRestart(ctx, 5*time.Second, w.haRestart) {
 				return
 			}
@@ -335,8 +378,38 @@ func (w *worker) haLoop(ctx context.Context) {
 		openDelta := cfg.ThresholdW
 		autoOn := cfg.AutoWindow
 		client := ha.New(cfg.HAURL, cfg.HAToken)
-		info := buildEntityInfo(ctx, client, entities)
-		log.Printf("[worker] HA WS subscribing to %d monitored entit(ies); auto-window=%v (Δ%.0fW)", len(entities), autoOn, openDelta)
+		fresh, ferr := buildEntityInfo(ctx, client, entities)
+		w.mu.RLock()
+		cache := w.einfoCache
+		w.mu.RUnlock()
+		info, ok := resolveEntityInfo(fresh, cache, entities)
+		if !ok {
+			// Subscribing with nothing resolved would "succeed" and then
+			// silently discard every event (the July 2026 outage) — treat it
+			// as a failed connect and retry instead.
+			reason := fmt.Sprintf("0 of %d monitored entities found in HA states", len(entities))
+			if ferr != nil {
+				reason = strings.TrimSpace(ferr.Error())
+			}
+			w.setHAStream(ctx, "entity resolution failed: "+reason)
+			log.Printf("[worker] entity resolution failed (%s) — retrying, not subscribing blind", reason)
+			if !waitOrRestart(ctx, 15*time.Second, w.haRestart) {
+				return
+			}
+			continue
+		}
+		if ferr != nil {
+			log.Printf("[worker] entity info: %v (continuing on cached info)", ferr)
+		}
+		for _, e := range entities {
+			if _, found := info[e]; !found {
+				log.Printf("[worker] monitored entity %s not in HA states and never seen before — skipped this subscription", e)
+			}
+		}
+		w.mu.Lock()
+		w.einfoCache = info
+		w.mu.Unlock()
+		log.Printf("[worker] HA WS subscribing to %d monitored entit(ies), %d resolved; auto-window=%v (Δ%.0fW)", len(entities), len(info), autoOn, openDelta)
 
 		// per-subscription normalization state (callback is single-threaded)
 		lastPower := map[string]float64{}
@@ -381,6 +454,7 @@ func (w *worker) haLoop(ctx context.Context) {
 						if now.Sub(s.ts) >= 5*time.Minute {
 							if w.d.InsertReferenceSample(subCtx, e, now, s.w) == nil {
 								kaLast[e] = kaSample{ts: now, w: s.w}
+								w.lastRefInsert.Store(now.Unix())
 							}
 						}
 					}
@@ -422,7 +496,18 @@ func (w *worker) haLoop(ctx context.Context) {
 			default:
 				return
 			}
-			_ = w.d.InsertReferenceSample(subCtx, entity, s.TS, powerW)
+			if w.d.InsertReferenceSample(subCtx, entity, s.TS, powerW) == nil {
+				now := time.Now().Unix()
+				if prev := w.lastRefInsert.Swap(now); prev > 0 && now-prev > int64((15*time.Minute).Seconds()) {
+					// the feed just came back after a real outage: heal the hole
+					// from HA statistics now, not at the next 12h utility tick
+					select {
+					case w.utilRestart <- struct{}{}:
+					default:
+					}
+				}
+				w.setHAStream(subCtx, "ok")
+			}
 			kaMu.Lock()
 			kaLast[entity] = kaSample{ts: s.TS, w: powerW}
 			kaMu.Unlock()
@@ -436,6 +521,7 @@ func (w *worker) haLoop(ctx context.Context) {
 		})
 		cancel()
 		if err != nil && ctx.Err() == nil {
+			w.setHAStream(ctx, "reconnecting: "+trim(strings.TrimSpace(err.Error()), 120))
 			log.Printf("[worker] HA WS ended: %v (reconnect in 5s)", err)
 			if !waitOrRestart(ctx, 5*time.Second, w.haRestart) {
 				return
@@ -485,7 +571,18 @@ func (w *worker) backfillReferenceGaps(ctx context.Context, cfg config.Config) {
 	fctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	client := ha.New(cfg.HAURL, cfg.HAToken)
-	info := buildEntityInfo(fctx, client, cfg.MonitoredEntities)
+	fresh, ferr := buildEntityInfo(fctx, client, cfg.MonitoredEntities)
+	if ferr != nil {
+		log.Printf("[worker] entity info: %v", ferr)
+	}
+	w.mu.RLock()
+	cache := w.einfoCache
+	w.mu.RUnlock()
+	info, ok := resolveEntityInfo(fresh, cache, cfg.MonitoredEntities)
+	if !ok {
+		log.Printf("[worker] reference backfill skipped: no monitored entities resolved (retries within 12h)")
+		return
+	}
 	for _, g := range gaps {
 		lo, hi := g[0], g[1]
 		if hi.After(capEnd) {
@@ -599,26 +696,42 @@ func (w *worker) backfillUtility(ctx context.Context, cfg config.Config) error {
 }
 
 // buildEntityInfo resolves each monitored entity's kind + unit factor from HA.
-func buildEntityInfo(ctx context.Context, client *ha.Client, entities []string) map[string]einfo {
+// It returns only what resolved; callers merge with their last-good cache via
+// resolveEntityInfo and decide whether the result is usable.
+func buildEntityInfo(ctx context.Context, client *ha.Client, entities []string) (map[string]einfo, error) {
 	out := map[string]einfo{}
 	sensors, err := client.MonitorableSensors(ctx)
 	if err != nil {
-		log.Printf("[worker] entity info: %v", err)
-		return out
+		return out, err
 	}
 	byID := map[string]ha.Entity{}
 	for _, s := range sensors {
 		byID[s.EntityID] = s
 	}
 	for _, e := range entities {
-		s, ok := byID[e]
-		if !ok {
-			log.Printf("[worker] monitored entity %s not found in HA states", e)
-			continue
+		if s, ok := byID[e]; ok {
+			out[e] = einfo{kind: s.Kind, factor: unitFactor(s.Kind, s.Unit)}
 		}
-		out[e] = einfo{kind: s.Kind, factor: unitFactor(s.Kind, s.Unit)}
 	}
-	return out
+	return out, nil
+}
+
+// resolveEntityInfo merges a fresh resolution with the last-good cache: fresh
+// wins, the cache fills misses (an HA mid-restart returns errors or
+// half-loaded entities; units and kinds don't change between boots). ok=false
+// means ZERO of the requested entities resolved — subscribing then would
+// "succeed" and silently discard every event (the July 2026 feed outage), so
+// the caller must retry instead.
+func resolveEntityInfo(fresh, cache map[string]einfo, entities []string) (map[string]einfo, bool) {
+	out := map[string]einfo{}
+	for _, e := range entities {
+		if in, ok := fresh[e]; ok {
+			out[e] = in
+		} else if in, ok := cache[e]; ok {
+			out[e] = in
+		}
+	}
+	return out, len(out) > 0
 }
 
 // unitFactor converts a sensor's native unit to W (power) or kWh (energy).
@@ -743,6 +856,14 @@ func (w *worker) autoWindow(ctx context.Context, power, openDelta float64, on bo
 		w.d.NotifyTests(ctx)
 		log.Printf("[worker] auto window discarded (blip, %s < %s)", now.Sub(w.aw.openedAt).Round(time.Second), autoMinDuration)
 	}
+}
+
+// trim bounds a string for status rows (error text can embed whole URLs).
+func trim(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 func waitOrRestart(ctx context.Context, d time.Duration, restart <-chan struct{}) bool {
