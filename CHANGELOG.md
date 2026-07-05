@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.1](https://github.com/metril/winnow/compare/v1.12.0...v1.12.1) (2026-07-05)
+
+
+### Bug Fixes
+
+* **worker:** survive HA restarts without silencing the monitored feed ([#33](https://github.com/metril/winnow/issues/33)) ([eddf713](https://github.com/metril/winnow/commit/eddf713b0d4a02485419a7756caf2f2dc880d0d0))
+
 ## [1.12.0](https://github.com/metril/winnow/compare/v1.11.1...v1.12.0) (2026-07-04)
 
 
