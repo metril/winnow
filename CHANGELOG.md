@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.2](https://github.com/metril/winnow/compare/v1.12.1...v1.12.2) (2026-07-05)
+
+
+### Bug Fixes
+
+* **capture:** restart the SDR pipeline when it goes silent ([#35](https://github.com/metril/winnow/issues/35)) ([5496931](https://github.com/metril/winnow/commit/54969319bd39a3a21975b0dc83fe67e4c7d710f3))
+
 ## [1.12.1](https://github.com/metril/winnow/compare/v1.12.0...v1.12.1) (2026-07-05)
 
 
