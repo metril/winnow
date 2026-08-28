@@ -30,7 +30,8 @@ func TestHVACStatus(t *testing.T) {
 }
 
 // TestHVACBackfillReplace covers the backfill contract: idempotent
-// replacement of history_backfill rows that never touches a live row.
+// replacement of history_backfill rows IN RANGE only — an out-of-range
+// history_backfill row and a live row both survive.
 func TestHVACBackfillReplace(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
@@ -40,6 +41,14 @@ func TestHVACBackfillReplace(t *testing.T) {
 	live := base.Add(20 * time.Minute)
 	if err := d.InsertHVACSample(ctx, entity, live, "cooling"); err != nil {
 		t.Fatalf("live insert: %v", err)
+	}
+
+	// an earlier, out-of-range backfill span: a later in-range replace must
+	// not touch it.
+	earlierFrom, earlierTo := base.Add(-2*time.Hour), base.Add(-1*time.Hour)
+	earlierAt := base.Add(-90 * time.Minute)
+	if err := d.ReplaceHVACBackfill(ctx, entity, earlierFrom, earlierTo, []time.Time{earlierAt}, []string{"idle"}); err != nil {
+		t.Fatalf("earlier backfill: %v", err)
 	}
 
 	from, to := base, base.Add(60*time.Minute)
@@ -56,14 +65,21 @@ func TestHVACBackfillReplace(t *testing.T) {
 		}
 	}
 
-	var nBack, nLive int
-	_ = d.pool.QueryRow(ctx, `SELECT count(*) FROM hvac_samples WHERE src='history_backfill'`).Scan(&nBack)
+	var nBackInRange, nLive, nEarlier int
+	_ = d.pool.QueryRow(ctx,
+		`SELECT count(*) FROM hvac_samples WHERE src='history_backfill' AND ts >= $1 AND ts <= $2`,
+		from, to).Scan(&nBackInRange)
 	_ = d.pool.QueryRow(ctx, `SELECT count(*) FROM hvac_samples WHERE src='live'`).Scan(&nLive)
-	if nBack != len(ts) {
-		t.Fatalf("backfill rows = %d, want %d (idempotent replace)", nBack, len(ts))
+	_ = d.pool.QueryRow(ctx,
+		`SELECT count(*) FROM hvac_samples WHERE src='history_backfill' AND ts=$1`, earlierAt).Scan(&nEarlier)
+	if nBackInRange != len(ts) {
+		t.Fatalf("in-range backfill rows = %d, want %d (idempotent replace)", nBackInRange, len(ts))
 	}
 	if nLive != 1 {
 		t.Fatalf("live rows = %d, want 1 — backfill must never touch live", nLive)
+	}
+	if nEarlier != 1 {
+		t.Fatalf("out-of-range backfill row missing — in-range replace must only delete rows IN RANGE")
 	}
 }
 
