@@ -382,6 +382,17 @@ func (s *server) handleIntegrationsStatus(w http.ResponseWriter, r *http.Request
 	// ha_ok (reachability) and reference freshness are SEPARATE facts: the API
 	// reached HA all through a 23-day feed outage. The UI must show both.
 	ref := s.d.ReferenceHealth(r.Context(), cfg.MonitoredEntities)
+	var hvacAction string
+	var hvacTS *time.Time
+	if cfg.HVACEntityID != "" {
+		hvacAction, hvacTS = s.d.HVACStatus(r.Context(), cfg.HVACEntityID)
+	}
+	var hvacLastTS *string
+	if hvacTS != nil {
+		ts := hvacTS.UTC().Format(time.RFC3339)
+		hvacLastTS = &ts
+	}
+	hvacStale := cfg.HVACEntityID != "" && (hvacTS == nil || time.Since(*hvacTS) > 30*time.Minute)
 	writeJSON(w, map[string]any{
 		"ha_ok": haOK, "mqtt_ok": mqOK,
 		"ha_reachable":       haOK,
@@ -393,6 +404,15 @@ func (s *server) handleIntegrationsStatus(w http.ResponseWriter, r *http.Request
 		"monitored_entities": cfg.MonitoredEntities,
 		"monitored_floor_w":  floor,
 		"published":          pub,
+		"hvac": map[string]any{
+			"entity_id":  cfg.HVACEntityID,
+			"heating_kw": cfg.HVACHeatingKW,
+			"cooling_kw": cfg.HVACCoolingKW,
+			"configured": cfg.HVACConfigured(),
+			"action":     hvacAction,
+			"last_ts":    hvacLastTS,
+			"stale":      hvacStale,
+		},
 	})
 }
 
@@ -415,6 +435,21 @@ func (s *server) handlePowerEntities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ents, err := ha.New(cfg.HAURL, cfg.HAToken).MonitorableSensors(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
+	writeJSON(w, ents)
+}
+
+// handleClimateEntities lists climate.* entities for the HVAC estimate picker.
+func (s *server) handleClimateEntities(w http.ResponseWriter, r *http.Request) {
+	cfg, _ := s.d.LoadConfig(r.Context())
+	if !cfg.HAConfigured() {
+		writeJSON(w, []ha.ClimateEntity{})
+		return
+	}
+	ents, err := ha.New(cfg.HAURL, cfg.HAToken).ClimateEntities(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), 502)
 		return
