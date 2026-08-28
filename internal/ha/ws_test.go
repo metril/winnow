@@ -157,3 +157,91 @@ func TestStreamHeartbeatKeepsQuietLinkAlive(t *testing.T) {
 		t.Fatal("stream did not return after context cancel")
 	}
 }
+
+// TestStreamStatesAttributes pins StreamStates' attribute-aware behaviour:
+// onState fires for every event (numeric or not) with attributes intact, in
+// order, while onSample fires only for numeric states — exactly as Stream did
+// before, now alongside onState rather than instead of it.
+func TestStreamStatesAttributes(t *testing.T) {
+	shrinkTimeouts(t, 2*time.Second, time.Hour, 2*time.Second)
+	srv := fakeHA(t, func(ctx context.Context, c *websocket.Conn) {
+		_, _, _ = c.Read(ctx) // the subscribe_trigger request
+		send := func(entity, state string, attrs map[string]any) {
+			ev := map[string]any{
+				"type": "event",
+				"event": map[string]any{
+					"variables": map[string]any{
+						"trigger": map[string]any{
+							"to_state": map[string]any{
+								"entity_id":  entity,
+								"state":      state,
+								"attributes": attrs,
+							},
+						},
+					},
+				},
+			}
+			b, _ := json.Marshal(ev)
+			_ = c.Write(ctx, websocket.MessageText, b)
+		}
+		send("climate.t", "cool", map[string]any{"hvac_action": "cooling"})
+		send("climate.t", "cool", map[string]any{"hvac_action": "idle"})
+		send("sensor.p", "42", nil)
+		<-ctx.Done()
+	})
+
+	type stateCall struct {
+		entity string
+		ev     StateEvent
+	}
+	states := make(chan stateCall, 10)
+	samples := make(chan string, 10)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- StreamStates(ctx, srv.URL, "tok", []string{"climate.t", "sensor.p"},
+			func(entity string, s Sample) { samples <- entity },
+			func(entity string, e StateEvent) { states <- stateCall{entity, e} })
+	}()
+
+	var got []stateCall
+	for i := 0; i < 3; i++ {
+		select {
+		case sc := <-states:
+			got = append(got, sc)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for onState call %d", i+1)
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream did not return after context cancel")
+	}
+
+	if got[0].entity != "climate.t" || got[0].ev.Attr("hvac_action") != "cooling" {
+		t.Fatalf("first onState = %+v, want climate.t/cooling", got[0])
+	}
+	if got[1].entity != "climate.t" || got[1].ev.Attr("hvac_action") != "idle" {
+		t.Fatalf("second onState = %+v, want climate.t/idle", got[1])
+	}
+	if got[2].entity != "sensor.p" {
+		t.Fatalf("third onState entity = %s, want sensor.p", got[2].entity)
+	}
+
+	select {
+	case e := <-samples:
+		if e != "sensor.p" {
+			t.Fatalf("onSample entity = %s, want sensor.p", e)
+		}
+	default:
+		t.Fatal("onSample was never called for the numeric sensor.p event")
+	}
+	select {
+	case e := <-samples:
+		t.Fatalf("onSample called again unexpectedly (for %s) — must not fire for non-numeric climate events", e)
+	default:
+	}
+}
