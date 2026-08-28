@@ -26,7 +26,11 @@ const refCarryLimit = "15 minutes"
 // constrain ts on both branches (gapfill needs a finite window), e.g.
 // "ts >= $2 AND ts <= $3". The HVAC branch is unconditional on entityWhere —
 // callers that must exclude it (the known-load anchor) filter per_entity by
-// "WHERE NOT is_hvac" themselves.
+// "WHERE NOT is_hvac" themselves. By design, the estimate keeps contributing
+// to per_entity (and so to MonitoredEnergy/MonitoredCV/MonitoredFloor and the
+// daily kWh rollup) during minutes the monitored feed itself is dead; only
+// AggregateSeries (the reference chart) and the daily screen's own coverage
+// gate additionally require real monitored data before showing a minute/day.
 func refBoundedCTEs(entityWhere, tsWhere string) string {
 	return `
 per_entity_raw AS (
