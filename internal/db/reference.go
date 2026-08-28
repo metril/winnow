@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"time"
+
+	"winnow/internal/config"
 )
 
 // refCarryLimit bounds how long a reference sample's value may be carried
@@ -14,23 +16,46 @@ import (
 const refCarryLimit = "15 minutes"
 
 // refBoundedCTEs emits the shared reference gap-fill ladder ending in a CTE
-// named per_entity (mt, entity_id, w) whose carried values are NULL once the
-// source sample is older than refCarryLimit. where filters reference_samples
-// with the caller's own placeholders and MUST constrain ts (gapfill needs a
-// finite window), e.g. "entity_id = ANY($1) AND ts >= $2 AND ts <= $3".
-func refBoundedCTEs(where string) string {
+// named per_entity (mt, entity_id, w, is_hvac) whose carried values are NULL
+// once the source sample is older than refCarryLimit. per_entity is the UNION
+// ALL of the real reference_samples branch (is_hvac = FALSE) and an estimated
+// HVAC branch (is_hvac = TRUE): thermostat hvac_action x the configured
+// heating/cooling kW, read from settings at query time so retuning either kW
+// is retroactive with no re-ingest. entityWhere filters reference_samples with
+// the caller's own placeholders, e.g. "entity_id = ANY($1)"; tsWhere MUST
+// constrain ts on both branches (gapfill needs a finite window), e.g.
+// "ts >= $2 AND ts <= $3". The HVAC branch is unconditional on entityWhere —
+// callers that must exclude it (the known-load anchor) filter per_entity by
+// "WHERE NOT is_hvac" themselves.
+func refBoundedCTEs(entityWhere, tsWhere string) string {
 	return `
 per_entity_raw AS (
   SELECT time_bucket_gapfill('1 minute', ts) AS mt, entity_id,
          locf(avg(power_w)) AS w0,
          locf(max(ts))      AS src_ts
   FROM reference_samples
-  WHERE ` + where + `
+  WHERE ` + entityWhere + ` AND ` + tsWhere + `
+  GROUP BY mt, entity_id),
+hvac_raw AS (
+  SELECT time_bucket_gapfill('1 minute', ts) AS mt, entity_id,
+         locf(last(action, ts)) AS act,
+         locf(max(ts))          AS src_ts
+  FROM hvac_samples
+  WHERE entity_id = (SELECT value FROM settings WHERE key = '` + config.KeyHVACEntityID + `') AND ` + tsWhere + `
   GROUP BY mt, entity_id),
 per_entity AS (
   SELECT mt, entity_id,
-         CASE WHEN mt <= src_ts + interval '` + refCarryLimit + `' THEN w0 END AS w
-  FROM per_entity_raw)`
+         CASE WHEN mt <= src_ts + interval '` + refCarryLimit + `' THEN w0 END AS w,
+         FALSE AS is_hvac
+  FROM per_entity_raw
+  UNION ALL
+  SELECT mt, entity_id,
+         CASE WHEN mt <= src_ts + interval '` + refCarryLimit + `' THEN 1000 * CASE act
+              WHEN 'heating' THEN ` + settingKW(config.KeyHVACHeatingKW) + `
+              WHEN 'cooling' THEN ` + settingKW(config.KeyHVACCoolingKW) + `
+              ELSE 0 END END AS w,
+         TRUE AS is_hvac
+  FROM hvac_raw)`
 }
 
 // InsertReferenceSample stores one normalized power sample (from the HA
@@ -53,7 +78,7 @@ func (d *DB) MonitoredEnergy(ctx context.Context, entities []string, start, end 
 	}
 	var kwh *float64
 	_ = d.pool.QueryRow(ctx, `
-WITH `+refBoundedCTEs("entity_id = ANY($1) AND ts >= $2 AND ts <= $3")+`,
+WITH `+refBoundedCTEs("entity_id = ANY($1)", "ts >= $2 AND ts <= $3")+`,
 per_min AS (SELECT mt, sum(coalesce(w,0)) AS w FROM per_entity GROUP BY mt)
 SELECT sum(w)/60.0/1000.0 FROM per_min`, entities, start, end).Scan(&kwh)
 	if kwh == nil {
@@ -65,15 +90,16 @@ SELECT sum(w)/60.0/1000.0 FROM per_min`, entities, start, end).Scan(&kwh)
 // EntityEnergy returns one HA sensor's energy over [start,end] in kWh: its
 // per-minute power (W), gap-filled within the carry bound, integrated over
 // time. Used by the known-load calibration anchor when the toggled load is
-// itself a measured HA sensor.
+// itself a measured HA sensor — excludes the HVAC branch (NOT is_hvac): the
+// anchor is one real sensor, never the estimate.
 func (d *DB) EntityEnergy(ctx context.Context, entity string, start, end time.Time) float64 {
 	if entity == "" {
 		return 0
 	}
 	var kwh *float64
 	_ = d.pool.QueryRow(ctx, `
-WITH `+refBoundedCTEs("entity_id = $1 AND ts >= $2 AND ts <= $3")+`
-SELECT sum(coalesce(w,0))/60.0/1000.0 FROM per_entity`, entity, start, end).Scan(&kwh)
+WITH `+refBoundedCTEs("entity_id = $1", "ts >= $2 AND ts <= $3")+`
+SELECT sum(coalesce(w,0))/60.0/1000.0 FROM per_entity WHERE NOT is_hvac`, entity, start, end).Scan(&kwh)
 	if kwh == nil {
 		return 0
 	}
@@ -90,7 +116,7 @@ func (d *DB) MonitoredCV(ctx context.Context, entities []string, start, end time
 	}
 	var mean, sd *float64
 	_ = d.pool.QueryRow(ctx, `
-WITH `+refBoundedCTEs("entity_id = ANY($1) AND ts >= $2 AND ts <= $3")+`,
+WITH `+refBoundedCTEs("entity_id = ANY($1)", "ts >= $2 AND ts <= $3")+`,
 per_min AS (SELECT mt, sum(coalesce(w,0)) AS w FROM per_entity GROUP BY mt)
 SELECT avg(w), stddev_samp(w) FROM per_min WHERE w > 0`, entities, start, end).Scan(&mean, &sd)
 	if mean == nil || sd == nil || *mean <= 0 {
@@ -109,7 +135,7 @@ func (d *DB) MonitoredFloor(ctx context.Context, entities []string, start, end t
 	}
 	var floor *float64
 	_ = d.pool.QueryRow(ctx, `
-WITH `+refBoundedCTEs("entity_id = ANY($1) AND ts >= $2 AND ts <= $3")+`,
+WITH `+refBoundedCTEs("entity_id = ANY($1)", "ts >= $2 AND ts <= $3")+`,
 agg AS (SELECT mt, sum(coalesce(w,0)) AS power FROM per_entity GROUP BY mt)
 SELECT percentile_cont(0.05) WITHIN GROUP (ORDER BY power) FROM agg WHERE power > 0`,
 		entities, start, end).Scan(&floor)
