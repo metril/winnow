@@ -227,7 +227,9 @@ func TestHVACFoldNoConfigEqualsBaseline(t *testing.T) {
 
 // TestHVACFoldAggregateSeriesOmitsHVACOnlyBuckets: once the monitored feed's
 // own carry expires, a bucket backed ONLY by the HVAC estimate must be a gap
-// (omitted) — never painted as a fabricated line over a dead monitored feed.
+// (omitted) — never painted as a fabricated line over a dead monitored feed —
+// while a bucket backed by BOTH must show the real HVAC contribution (not
+// just the monitored sensor's own power).
 func TestHVACFoldAggregateSeriesOmitsHVACOnlyBuckets(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
@@ -250,14 +252,45 @@ func TestHVACFoldAggregateSeriesOmitsHVACOnlyBuckets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("series: %v", err)
 	}
-	// sensor.a's own carry (15 min) expires at minute 35; well past that, only
-	// HVAC data remains for the bucket -> must be a gap.
+	if len(pts) == 0 {
+		t.Fatal("no series points at all — HVAC contribution never reached AggregateSeries (or the query is broken)")
+	}
+
+	// sensor.a's own carry (15 min) expires at minute 35; from minute 40 onward
+	// only HVAC data remains for the bucket -> must be a gap. The bucket at
+	// exactly base+40m is itself HVAC-only, so it must be excluded too
+	// (!Before, not just After).
 	deadEdge := base.Add(40 * time.Minute)
+	var maxTS time.Time
+	var firstVal *float64
 	for _, p := range pts {
-		ts, _ := time.Parse(time.RFC3339Nano, p.Bucket)
-		if ts.After(deadEdge) {
+		ts, perr := time.Parse(time.RFC3339Nano, p.Bucket)
+		if perr != nil {
+			t.Fatalf("bad bucket timestamp %q: %v", p.Bucket, perr)
+		}
+		if !ts.Before(deadEdge) {
 			t.Fatalf("bucket %s (%v W) exists with only HVAC data — expected a gap", p.Bucket, p.Value)
 		}
+		if ts.After(maxTS) {
+			maxTS = ts
+		}
+		if ts.Equal(base) {
+			v := p.Value
+			firstVal = &v
+		}
+	}
+	// early bucket: real 1000 W sensor + estimated 3000 W cooling (0.5/3.0 kW
+	// heating/cooling) must both land here — proves the HVAC estimate actually
+	// reaches AggregateSeries, not just that dead buckets are gapped.
+	if firstVal == nil {
+		t.Fatal("no point at the first bucket (minute 0)")
+	}
+	if *firstVal < 3900 || *firstVal > 4100 {
+		t.Fatalf("first bucket = %v W, want ~4000 (1000 W sensor + 3000 W HVAC)", *firstVal)
+	}
+	// last surviving bucket is the one covering the carry's last live minute (35).
+	if !maxTS.Equal(base.Add(35 * time.Minute)) {
+		t.Fatalf("last surviving bucket = %v, want %v (minute 35, the carry edge)", maxTS, base.Add(35*time.Minute))
 	}
 }
 
