@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.13.0](https://github.com/metril/winnow/compare/v1.12.2...v1.13.0) (2026-08-28)
+
+
+### Features
+
+* estimated HVAC power in the HA reference feed ([1bbcf56](https://github.com/metril/winnow/commit/1bbcf56af3c61e8f66504f9c730c1a6151791bfb))
+* **ha:** attribute-aware state stream, climate entities, attribute history ([9211841](https://github.com/metril/winnow/commit/92118411af9264446fda6b75db3c6de360c5f567))
+* **hvac:** settings keys, hvac_samples table and DB access ([c85ce4e](https://github.com/metril/winnow/commit/c85ce4e6532e33b93d257c399e71da2968c0fbad))
+* **reference:** fold estimated HVAC power into the reference ladder ([02fcb52](https://github.com/metril/winnow/commit/02fcb522cdffb136f36bed21b85b4965dbbbdb3e))
+* **ui:** HVAC estimate settings card, climate entity picker and status ([70b91f6](https://github.com/metril/winnow/commit/70b91f66209614ceaffa975bdb1de6deb3ed8399))
+* **worker:** stream, keep alive and backfill the thermostat hvac_action ([8ddee3d](https://github.com/metril/winnow/commit/8ddee3d2d473c7397f38d43b8241c597d988a8cf))
+
+
+### Bug Fixes
+
+* **config:** agree with the SQL kW format for the HVAC settings ([babbe99](https://github.com/metril/winnow/commit/babbe99d54569b2d693d90c0a972f2df1cbcd5c0))
+* **reference:** trim settings values in the HVAC fold ([780f2e9](https://github.com/metril/winnow/commit/780f2e916abe055eb40afe62ea7c70d80bdc289d))
+* **worker:** drop the HVAC keepalive when the thermostat goes unavailable ([b1b3870](https://github.com/metril/winnow/commit/b1b38702881264c27f58473baf86c9aea543e175))
+
 ## [1.12.2](https://github.com/metril/winnow/compare/v1.12.1...v1.12.2) (2026-07-05)
 
 
