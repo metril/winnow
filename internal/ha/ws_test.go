@@ -164,19 +164,25 @@ func TestStreamHeartbeatKeepsQuietLinkAlive(t *testing.T) {
 // before, now alongside onState rather than instead of it.
 func TestStreamStatesAttributes(t *testing.T) {
 	shrinkTimeouts(t, 2*time.Second, time.Hour, 2*time.Second)
+	lastUpdated1 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	lastUpdated2 := time.Date(2026, 8, 1, 12, 5, 0, 0, time.UTC)
 	srv := fakeHA(t, func(ctx context.Context, c *websocket.Conn) {
 		_, _, _ = c.Read(ctx) // the subscribe_trigger request
-		send := func(entity, state string, attrs map[string]any) {
+		send := func(entity, state string, attrs map[string]any, lastUpdated time.Time) {
+			toState := map[string]any{
+				"entity_id":  entity,
+				"state":      state,
+				"attributes": attrs,
+			}
+			if !lastUpdated.IsZero() {
+				toState["last_updated"] = lastUpdated.Format(time.RFC3339Nano)
+			}
 			ev := map[string]any{
 				"type": "event",
 				"event": map[string]any{
 					"variables": map[string]any{
 						"trigger": map[string]any{
-							"to_state": map[string]any{
-								"entity_id":  entity,
-								"state":      state,
-								"attributes": attrs,
-							},
+							"to_state": toState,
 						},
 					},
 				},
@@ -184,9 +190,9 @@ func TestStreamStatesAttributes(t *testing.T) {
 			b, _ := json.Marshal(ev)
 			_ = c.Write(ctx, websocket.MessageText, b)
 		}
-		send("climate.t", "cool", map[string]any{"hvac_action": "cooling"})
-		send("climate.t", "cool", map[string]any{"hvac_action": "idle"})
-		send("sensor.p", "42", nil)
+		send("climate.t", "cool", map[string]any{"hvac_action": "cooling"}, lastUpdated1)
+		send("climate.t", "cool", map[string]any{"hvac_action": "idle"}, lastUpdated2)
+		send("sensor.p", "42", nil, time.Time{}) // no last_updated: must fall back to ~now
 		<-ctx.Done()
 	})
 
@@ -224,11 +230,20 @@ func TestStreamStatesAttributes(t *testing.T) {
 	if got[0].entity != "climate.t" || got[0].ev.Attr("hvac_action") != "cooling" {
 		t.Fatalf("first onState = %+v, want climate.t/cooling", got[0])
 	}
+	if !got[0].ev.TS.Equal(lastUpdated1) {
+		t.Fatalf("first onState TS = %v, want %v (the event's last_updated)", got[0].ev.TS, lastUpdated1)
+	}
 	if got[1].entity != "climate.t" || got[1].ev.Attr("hvac_action") != "idle" {
 		t.Fatalf("second onState = %+v, want climate.t/idle", got[1])
 	}
+	if !got[1].ev.TS.Equal(lastUpdated2) {
+		t.Fatalf("second onState TS = %v, want %v (the event's last_updated)", got[1].ev.TS, lastUpdated2)
+	}
 	if got[2].entity != "sensor.p" {
 		t.Fatalf("third onState entity = %s, want sensor.p", got[2].entity)
+	}
+	if since := time.Since(got[2].ev.TS); since < 0 || since > 5*time.Second {
+		t.Fatalf("third onState TS = %v (since=%v), want ~now (zero last_updated must fall back)", got[2].ev.TS, since)
 	}
 
 	select {

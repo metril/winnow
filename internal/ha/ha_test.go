@@ -139,6 +139,12 @@ func TestAttrHistory(t *testing.T) {
 	if got[0].State != "cool" || got[1].State != "cool" {
 		t.Fatalf("state mismatch: %+v", got)
 	}
+	if !got[0].TS.Equal(start.Add(1 * time.Minute)) {
+		t.Fatalf("got[0].TS = %v, want %v (the served last_updated)", got[0].TS, start.Add(1*time.Minute))
+	}
+	if !got[1].TS.Equal(start.Add(2 * time.Minute)) {
+		t.Fatalf("got[1].TS = %v, want %v (the served last_updated)", got[1].TS, start.Add(2*time.Minute))
+	}
 }
 
 func TestAttrHistoryEmpty(t *testing.T) {
