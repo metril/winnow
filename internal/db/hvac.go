@@ -85,6 +85,17 @@ func (d *DB) HVACGaps(ctx context.Context, entity string, lookback, minGap time.
 	return d.sampleGaps(ctx, "hvac_samples", "entity_id = $1", entity, lookback, minGap, capEnd)
 }
 
+// HVACSpan returns the first and last sample ts for entity (nil, nil if none
+// exist yet). The backfill loop uses this to find the leading gap: a freshly
+// configured entity gets a seed sample immediately on connect, so the
+// interesting hole is BEFORE the first sample, not one HVACGaps' interior/
+// trailing search already covers.
+func (d *DB) HVACSpan(ctx context.Context, entity string) (first, last *time.Time) {
+	_ = d.pool.QueryRow(ctx,
+		`SELECT min(ts), max(ts) FROM hvac_samples WHERE entity_id=$1`, entity).Scan(&first, &last)
+	return first, last
+}
+
 // HVACStatus returns the latest hvac_action sample's action and ts for
 // entity ("", nil if none).
 func (d *DB) HVACStatus(ctx context.Context, entity string) (action string, ts *time.Time) {

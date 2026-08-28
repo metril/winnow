@@ -132,3 +132,32 @@ func TestHVACGaps(t *testing.T) {
 		t.Fatalf("dense samples should have no gaps, got %v", denseGaps)
 	}
 }
+
+// TestHVACSpan covers the leading-gap decision input: nil/nil before any
+// sample, then the min/max ts once samples exist.
+func TestHVACSpan(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	ctx := context.Background()
+	entity := "climate.living_room"
+
+	first, last := d.HVACSpan(ctx, entity)
+	if first != nil || last != nil {
+		t.Fatalf("expected nil span before any insert, got first=%v last=%v", first, last)
+	}
+
+	t0 := base
+	if err := d.InsertHVACSample(ctx, entity, t0, "idle"); err != nil {
+		t.Fatalf("insert t0: %v", err)
+	}
+	if err := d.InsertHVACSample(ctx, entity, t0.Add(45*time.Minute), "heating"); err != nil {
+		t.Fatalf("insert t0+45m: %v", err)
+	}
+	first, last = d.HVACSpan(ctx, entity)
+	if first == nil || !first.Equal(t0) {
+		t.Fatalf("first = %v, want %v", first, t0)
+	}
+	if last == nil || !last.Equal(t0.Add(45*time.Minute)) {
+		t.Fatalf("last = %v, want %v", last, t0.Add(45*time.Minute))
+	}
+}
