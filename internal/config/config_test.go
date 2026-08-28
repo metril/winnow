@@ -2,6 +2,26 @@ package config
 
 import "testing"
 
+func TestParseKW(t *testing.T) {
+	cases := []struct {
+		in   string
+		want float64
+	}{
+		{"3.5", 3.5},
+		{" 3.5 ", 3.5},
+		{"1e1", 0},
+		{"+3.5", 0},
+		{"3.", 0},
+		{"-1", 0},
+		{"abc", 0},
+	}
+	for _, c := range cases {
+		if got := parseKW(c.in); got != c.want {
+			t.Errorf("parseKW(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
 func TestDeviceScanOverrides(t *testing.T) {
 	on := true
 	c := CaptureConfig{

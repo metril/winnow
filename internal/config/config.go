@@ -7,6 +7,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -215,6 +216,30 @@ func env(k, def string) string {
 	return def
 }
 
+// kwFormatRE matches the same tolerance as settingKW's SQL regex
+// (internal/db/helpers.go) — the two must agree exactly, or the live
+// aggregate (parsed here) and stored analyses / auto-window (computed in SQL)
+// diverge on ambiguous formats like "1e1" or "+3.5".
+var kwFormatRE = regexp.MustCompile(`^[0-9]*\.?[0-9]+$`)
+
+// parseKW parses a heating/cooling kW setting value: TrimSpace, then the
+// result must match kwFormatRE before strconv.ParseFloat runs. This rejects
+// forms ParseFloat alone would accept but SQL's settingKW would not — "1e1",
+// "+3.5", "3.", "-1", Inf/NaN — so a value the dashboard shows as configured
+// never quietly nets to 0 in one place while the other still counts it (or
+// vice versa). Anything that doesn't match, or fails to parse, is 0.
+func parseKW(s string) float64 {
+	s = strings.TrimSpace(s)
+	if !kwFormatRE.MatchString(s) {
+		return 0
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
 // FromMap overlays DB-stored settings on env bootstrap defaults. DB wins.
 func FromMap(m map[string]string) Config {
 	get := func(key, envName, def string) string {
@@ -235,14 +260,10 @@ func FromMap(m map[string]string) Config {
 		mult = 1
 	}
 	cost, _ := strconv.ParseFloat(get(KeyCostPerKwh, "", "0"), 64)
-	hvacHeating, _ := strconv.ParseFloat(get(KeyHVACHeatingKW, "", "0"), 64)
-	if hvacHeating < 0 {
-		hvacHeating = 0
-	}
-	hvacCooling, _ := strconv.ParseFloat(get(KeyHVACCoolingKW, "", "0"), 64)
-	if hvacCooling < 0 {
-		hvacCooling = 0
-	}
+	// parseKW rejects "-1" by format (no leading digit before '-'), so no
+	// separate negative clamp is needed here.
+	hvacHeating := parseKW(get(KeyHVACHeatingKW, "", "0"))
+	hvacCooling := parseKW(get(KeyHVACCoolingKW, "", "0"))
 	capture := CaptureConfig{
 		Freq:     get(KeyScanFreq, "FREQ", "912600155"),
 		Gain:     get(KeyScanGain, "GAIN", ""),
