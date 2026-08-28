@@ -126,6 +126,131 @@ func TestExpandHVACHistory_EventsAfterHiIgnored(t *testing.T) {
 	}
 }
 
+func hvacKAEqual(a, b hvacKA) bool {
+	return a.set == b.set && a.action == b.action && a.ts.Equal(b.ts)
+}
+
+func TestHVACTransition(t *testing.T) {
+	cases := []struct {
+		name   string
+		cur    hvacKA
+		action string
+		ts     time.Time
+		want   hvacKA
+	}{
+		{
+			name:   "set to unavailable clears",
+			cur:    hvacKA{set: true, action: "heating", ts: base},
+			action: "",
+			ts:     base.Add(5 * time.Minute),
+			want:   hvacKA{},
+		},
+		{
+			name:   "unavailable to heating sets",
+			cur:    hvacKA{},
+			action: "heating",
+			ts:     base,
+			want:   hvacKA{set: true, action: "heating", ts: base},
+		},
+		{
+			name:   "cooling to heating updates ts and action",
+			cur:    hvacKA{set: true, action: "cooling", ts: base},
+			action: "heating",
+			ts:     base.Add(10 * time.Minute),
+			want:   hvacKA{set: true, action: "heating", ts: base.Add(10 * time.Minute)},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := hvacTransition(c.cur, c.action, c.ts)
+			if !hvacKAEqual(got, c.want) {
+				t.Errorf("hvacTransition(%+v, %q, %v) = %+v, want %+v", c.cur, c.action, c.ts, got, c.want)
+			}
+		})
+	}
+}
+
+func assertRanges(t *testing.T, got, want [][2]time.Time) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d ranges %v, want %d %v", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if !got[i][0].Equal(want[i][0]) || !got[i][1].Equal(want[i][1]) {
+			t.Fatalf("range %d = [%v,%v], want [%v,%v]", i, got[i][0], got[i][1], want[i][0], want[i][1])
+		}
+	}
+}
+
+func TestPlanHVACBackfill_NoSamples(t *testing.T) {
+	now := base
+	lookback, minGap := 24*time.Hour, 30*time.Minute
+	capEnd := now.Add(-2 * time.Hour)
+	got := planHVACBackfill(nil, nil, now, lookback, minGap, capEnd)
+	want := [][2]time.Time{{now.Add(-lookback), capEnd}}
+	assertRanges(t, got, want)
+}
+
+func TestPlanHVACBackfill_FirstInsideLookbackNoGaps(t *testing.T) {
+	now := base
+	lookback, minGap := 24*time.Hour, 30*time.Minute
+	capEnd := now.Add(-2 * time.Hour)
+	lookStart := now.Add(-lookback)
+	first := lookStart.Add(2 * time.Hour) // well past lookStart+minGap
+	got := planHVACBackfill(&first, nil, now, lookback, minGap, capEnd)
+	want := [][2]time.Time{{lookStart, first}}
+	assertRanges(t, got, want)
+}
+
+func TestPlanHVACBackfill_FirstInsideLookbackWithInteriorGap(t *testing.T) {
+	now := base
+	lookback, minGap := 24*time.Hour, 30*time.Minute
+	capEnd := now.Add(-2 * time.Hour)
+	lookStart := now.Add(-lookback)
+	first := lookStart.Add(2 * time.Hour)
+	gapLo, gapHi := lookStart.Add(5*time.Hour), lookStart.Add(6*time.Hour)
+	got := planHVACBackfill(&first, [][2]time.Time{{gapLo, gapHi}}, now, lookback, minGap, capEnd)
+	want := [][2]time.Time{{lookStart, first}, {gapLo, gapHi}}
+	assertRanges(t, got, want)
+}
+
+func TestPlanHVACBackfill_GapPastCapEndClamped(t *testing.T) {
+	now := base
+	lookback, minGap := 24*time.Hour, 30*time.Minute
+	capEnd := now.Add(-2 * time.Hour)
+	lookStart := now.Add(-lookback)
+	first := lookStart.Add(2 * time.Hour)
+	gapLo := capEnd.Add(-1 * time.Hour)
+	gapHi := capEnd.Add(1 * time.Hour) // past capEnd
+	got := planHVACBackfill(&first, [][2]time.Time{{gapLo, gapHi}}, now, lookback, minGap, capEnd)
+	want := [][2]time.Time{{lookStart, first}, {gapLo, capEnd}}
+	assertRanges(t, got, want)
+}
+
+func TestPlanHVACBackfill_GapEntirelyPastCapEndDropped(t *testing.T) {
+	now := base
+	lookback, minGap := 24*time.Hour, 30*time.Minute
+	capEnd := now.Add(-2 * time.Hour)
+	lookStart := now.Add(-lookback)
+	first := lookStart.Add(2 * time.Hour)
+	gapLo := capEnd.Add(1 * time.Hour)
+	gapHi := capEnd.Add(2 * time.Hour)
+	got := planHVACBackfill(&first, [][2]time.Time{{gapLo, gapHi}}, now, lookback, minGap, capEnd)
+	want := [][2]time.Time{{lookStart, first}}
+	assertRanges(t, got, want)
+}
+
+func TestPlanHVACBackfill_FirstBeforeLookbackStartNoLeadingGap(t *testing.T) {
+	now := base
+	lookback, minGap := 24*time.Hour, 30*time.Minute
+	capEnd := now.Add(-2 * time.Hour)
+	lookStart := now.Add(-lookback)
+	first := lookStart.Add(-time.Hour) // before the lookback window entirely
+	got := planHVACBackfill(&first, nil, now, lookback, minGap, capEnd)
+	want := [][2]time.Time{}
+	assertRanges(t, got, want)
+}
+
 func TestExpandHVACHistory_EmptyActionSkipped(t *testing.T) {
 	lo, hi := base, base.Add(20*time.Minute)
 	events := []ha.StateEvent{ev(-5, "heating"), evNoAction(10)}

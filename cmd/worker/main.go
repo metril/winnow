@@ -450,11 +450,7 @@ func (w *worker) haLoop(ctx context.Context) {
 		kaLast := map[string]kaSample{}
 		// hvac tracks the last known hvac_action for the live aggregate + its
 		// own keepalive; guarded by kaMu like kaLast (the ticker touches both).
-		type hvacKA struct {
-			set    bool
-			action string
-			ts     time.Time
-		}
+		// hvacKA is defined in hvac.go alongside the pure hvacTransition helper.
 		var hvac hvacKA
 
 		if hvacOn {
@@ -597,12 +593,22 @@ func (w *worker) haLoop(ctx context.Context) {
 			}
 			action := ev.Attr("hvac_action")
 			if action == "" {
+				// The thermostat reported no hvac_action (e.g. it just went
+				// unavailable): stop asserting it's still running and
+				// republish the aggregate without it — otherwise the 5-min
+				// keepalive would keep inserting the last-known action for
+				// the whole outage, fabricating kW-scale energy.
+				kaMu.Lock()
+				hvac = hvacTransition(hvac, "", ev.TS)
+				kaMu.Unlock()
+				publish()
 				return
 			}
-			_ = w.d.InsertHVACSample(subCtx, entity, ev.TS, action)
-			kaMu.Lock()
-			hvac = hvacKA{set: true, action: action, ts: ev.TS}
-			kaMu.Unlock()
+			if w.d.InsertHVACSample(subCtx, entity, ev.TS, action) == nil {
+				kaMu.Lock()
+				hvac = hvacTransition(hvac, action, ev.TS)
+				kaMu.Unlock()
+			}
 			publish()
 		}
 
@@ -740,37 +746,30 @@ func (w *worker) backfillReferenceGaps(ctx context.Context, cfg config.Config) {
 // backfillReferenceGaps: idempotent, tagged history_backfill, live rows never
 // touched. A freshly configured entity has no history before its first live/
 // seed sample, so the leading gap (before the first sample) matters here in a
-// way it doesn't for the always-already-populated reference feed.
+// way it doesn't for the always-already-populated reference feed. All range
+// planning (the leading gap, clamping to capEnd, dropping emptied ranges) is
+// the pure planHVACBackfill (hvac.go); this function only does I/O.
 func (w *worker) backfillHVACHistory(ctx context.Context, cfg config.Config) {
 	entity := cfg.HVACEntityID
-	capEnd := time.Now().Add(-2 * time.Hour)
+	now := time.Now()
+	capEnd := now.Add(-2 * time.Hour)
 	lookback := 10 * 24 * time.Hour
-	lookStart := time.Now().Add(-lookback)
+	minGap := 30 * time.Minute
 
 	first, _ := w.d.HVACSpan(ctx, entity)
 	var gaps [][2]time.Time
-	if first == nil {
-		gaps = [][2]time.Time{{lookStart, capEnd}}
-	} else {
-		gaps = w.d.HVACGaps(ctx, entity, lookback, 30*time.Minute, capEnd)
-		if first.After(lookStart.Add(30 * time.Minute)) {
-			gaps = append([][2]time.Time{{lookStart, *first}}, gaps...)
-		}
+	if first != nil {
+		gaps = w.d.HVACGaps(ctx, entity, lookback, minGap, capEnd)
 	}
-	if len(gaps) == 0 {
+	ranges := planHVACBackfill(first, gaps, now, lookback, minGap, capEnd)
+	if len(ranges) == 0 {
 		return
 	}
 	fctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	client := ha.New(cfg.HAURL, cfg.HAToken)
-	for _, g := range gaps {
+	for _, g := range ranges {
 		lo, hi := g[0], g[1]
-		if hi.After(capEnd) {
-			hi = capEnd
-		}
-		if !lo.Before(hi) {
-			continue
-		}
 		events, err := client.AttrHistory(fctx, entity, lo.Add(-time.Hour), hi)
 		if err != nil {
 			log.Printf("[worker] hvac backfill %s..%s: %v", lo.Format(time.RFC3339), hi.Format(time.RFC3339), err)
