@@ -106,6 +106,34 @@ func (c *Client) History(ctx context.Context, entity string, start, end time.Tim
 	return out, nil
 }
 
+// AttrHistory fetches an entity's full state history (state + attributes)
+// over [start,end]. Unlike History, minimal_response is omitted (it strips
+// attributes from the response) and significant_changes_only=0 is forced, so
+// attribute-only changes — a climate entity's hvac_action flipping while
+// state stays e.g. "cool" — are included, in HA's (ascending) order.
+func (c *Client) AttrHistory(ctx context.Context, entity string, start, end time.Time) ([]StateEvent, error) {
+	path := fmt.Sprintf("/api/history/period/%s?filter_entity_id=%s&end_time=%s&significant_changes_only=0",
+		start.UTC().Format(time.RFC3339), entity,
+		end.UTC().Format(time.RFC3339))
+	body, err := c.get(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	var outer [][]haState
+	if err := json.Unmarshal(body, &outer); err != nil {
+		return nil, err
+	}
+	out := []StateEvent{}
+	if len(outer) > 0 {
+		for _, s := range outer[0] {
+			var a map[string]any
+			_ = json.Unmarshal(s.Attributes, &a)
+			out = append(out, StateEvent{TS: s.LastUpdated.UTC(), State: s.State, Attributes: a})
+		}
+	}
+	return out, nil
+}
+
 // Entity is a candidate reference sensor for the dashboard picker.
 type Entity struct {
 	EntityID string `json:"entity_id"`
@@ -186,6 +214,53 @@ func (c *Client) EntityKinds(ctx context.Context, entities []string) (map[string
 			_ = json.Unmarshal(s.Attributes, &a)
 			out[s.EntityID] = classify(a)
 		}
+	}
+	return out, nil
+}
+
+// ClimateEntity is a climate.* entity usable as an HVAC power-estimate
+// driver (its hvac_action attribute drives the estimate).
+type ClimateEntity struct {
+	EntityID   string `json:"entity_id"`
+	Name       string `json:"name"`
+	State      string `json:"state"`
+	HVACAction string `json:"hvac_action"`
+	HasAction  bool   `json:"has_action"`
+}
+
+// ClimateEntities lists climate.* entities for the HVAC estimate picker.
+// HasAction distinguishes "no hvac_action attribute" from "hvac_action is
+// empty" — some climate integrations only expose the attribute in certain
+// modes.
+func (c *Client) ClimateEntities(ctx context.Context) ([]ClimateEntity, error) {
+	body, err := c.get(ctx, "/api/states")
+	if err != nil {
+		return nil, err
+	}
+	var states []haState
+	if err := json.Unmarshal(body, &states); err != nil {
+		return nil, err
+	}
+	out := []ClimateEntity{}
+	for _, s := range states {
+		if !strings.HasPrefix(s.EntityID, "climate.") {
+			continue
+		}
+		var a map[string]any
+		_ = json.Unmarshal(s.Attributes, &a)
+		name, _ := a["friendly_name"].(string)
+		if name == "" {
+			name = s.EntityID
+		}
+		action, hasAction := a["hvac_action"]
+		actionStr, _ := action.(string)
+		out = append(out, ClimateEntity{
+			EntityID:   s.EntityID,
+			Name:       name,
+			State:      s.State,
+			HVACAction: actionStr,
+			HasAction:  hasAction,
+		})
 	}
 	return out, nil
 }

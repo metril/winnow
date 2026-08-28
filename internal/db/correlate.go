@@ -168,7 +168,7 @@ func (d *DB) CorrelationVsReferenceAux(ctx context.Context, entities []string, s
 	// bucket still yields real consumption, where within-bucket max-min was 0.
 	reg := map[int64]regrRow{}
 	rows, err := d.pool.Query(ctx, `
-WITH `+refBoundedCTEs("entity_id = ANY($3) AND ts >= $1 AND ts <= $2")+`,
+WITH `+refBoundedCTEs("entity_id = ANY($3)", "ts >= $1 AND ts <= $2")+`,
 per_min AS (SELECT mt, sum(coalesce(w,0)) AS w FROM per_entity GROUP BY mt),
 ref AS (
   SELECT time_bucket(make_interval(mins => $4), mt) AS b, sum(w)/60.0 AS energy_wh
@@ -444,7 +444,7 @@ func (d *DB) alignedSeries(ctx context.Context, ids []int64, entities []string, 
 		return out, nil
 	}
 	rows, err := d.pool.Query(ctx, `
-WITH `+refBoundedCTEs("entity_id = ANY($3) AND ts >= $1 AND ts <= $2")+`,
+WITH `+refBoundedCTEs("entity_id = ANY($3)", "ts >= $1 AND ts <= $2")+`,
 per_min AS (SELECT mt, sum(coalesce(w,0)) AS w FROM per_entity GROUP BY mt),
 ref AS (
   SELECT time_bucket(make_interval(mins => $4), mt) AS b, sum(w)/60.0 AS energy_wh

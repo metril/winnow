@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Server, Send, Activity, DollarSign, Sliders, RefreshCw, Gauge } from "lucide-react";
-import { api, PowerEntity, Status, UtilityStat } from "../api";
+import { Server, Send, Activity, DollarSign, Sliders, RefreshCw, Gauge, Thermometer } from "lucide-react";
+import { api, PowerEntity, ClimateEntity, Status, UtilityStat } from "../api";
 import { fmt } from "../util";
 import { Page } from "./shell";
 import { Card, CardHeader, CardBody, Button, Input, Field, Badge, Dot, Toggle, InfoHint, useToast } from "../ui";
@@ -18,7 +18,7 @@ export default function Settings() {
 
   const save = () => {
     const body: Record<string, string> = {};
-    ["ha_url", "ha_token", "mqtt_host", "mqtt_port", "mqtt_user", "mqtt_pass", "mqtt_prefix", "threshold_w", "auto_window", "default_multiplier", "default_unit", "cost_per_kwh", "currency", "utility_statistic_id", "utility_period", "utility_unit"]
+    ["ha_url", "ha_token", "mqtt_host", "mqtt_port", "mqtt_user", "mqtt_pass", "mqtt_prefix", "threshold_w", "auto_window", "default_multiplier", "default_unit", "cost_per_kwh", "currency", "utility_statistic_id", "utility_period", "utility_unit", "hvac_entity_id", "hvac_heating_kw", "hvac_cooling_kw"]
       .forEach((k) => { if (s[k] !== undefined && s[k] !== "") body[k] = String(s[k]); });
     return api.putSettings(body).then(load);
   };
@@ -61,6 +61,10 @@ export default function Settings() {
 
       <UtilityBill value={field("utility_statistic_id")} period={field("utility_period") || "auto"}
         onPick={(id, unit) => { set("utility_statistic_id", id); set("utility_unit", unit || "kWh"); }} onPeriod={(p) => set("utility_period", p)} />
+
+      <HVACEstimate entityId={field("hvac_entity_id")} heatingKW={field("hvac_heating_kw")} coolingKW={field("hvac_cooling_kw")}
+        onPick={(id) => set("hvac_entity_id", id)} onHeatingKW={(v) => set("hvac_heating_kw", v)} onCoolingKW={(v) => set("hvac_cooling_kw", v)}
+        onCleared={load} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
@@ -150,6 +154,72 @@ function UtilityBill({ value, period, onPick, onPeriod }: {
           </select>
         </Field>
         <p className="text-micro text-tertiary">After saving, the worker backfills the trailing ~13 months and refreshes twice daily.</p>
+      </CardBody>
+    </Card>
+  );
+}
+
+function HVACEstimate({ entityId, heatingKW, coolingKW, onPick, onHeatingKW, onCoolingKW, onCleared }: {
+  entityId: string; heatingKW: string; coolingKW: string;
+  onPick: (id: string) => void; onHeatingKW: (v: string) => void; onCoolingKW: (v: string) => void; onCleared: () => void;
+}) {
+  const [entities, setEntities] = useState<ClimateEntity[] | null>(null);
+  const [status, setStatus] = useState<Status | null>(null);
+  const loadStatus = async () => setStatus(await api.status());
+  useEffect(() => { loadStatus(); }, []);
+  const load = () => api.climateEntities().then(setEntities);
+  const clear = () => api.putSettings({ hvac_entity_id: "" }).then(() => Promise.all([onCleared(), loadStatus()]));
+  const picked = entities?.find((e) => e.entity_id === entityId);
+  const hvac = status?.hvac;
+  return (
+    <Card>
+      <CardHeader title="HVAC estimate" icon={<Thermometer size={16} />}
+        subtitle="Your thermostat's heating/cooling state × an estimated draw, added to the monitored consumption so identification sees the whole home."
+        actions={entityId ? <Badge tone="brand">selected</Badge> : <Badge tone="default">not set</Badge>} />
+      <CardBody className="space-y-3">
+        <p className="text-micro text-tertiary">
+          The kW values are applied at query time — tune them any time and every analysis updates
+          retroactively. Leave both at 0 if the HVAC's own power sensor is already in the monitored set
+          (it would be counted twice).
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={load}>Load climate entities</Button>
+          {entityId && <span className="mono text-micro text-tertiary">current: {entityId}</span>}
+          {entityId && <Button size="sm" variant="ghost" onClick={clear}>Clear</Button>}
+        </div>
+        {entities && (
+          <div className="space-y-2">
+            {entities.length === 0
+              ? <p className="text-small text-tertiary">No climate entities found.</p>
+              : <div className="max-h-56 overflow-y-auto rounded-lg border border-border bg-app/40 p-2">
+                {entities.map((c) => (
+                  <label key={c.entity_id} className="flex items-center gap-2 rounded px-2 py-1 text-small hover:bg-raised">
+                    <input type="radio" name="hvacentity" className="accent-brand" checked={entityId === c.entity_id} onChange={() => onPick(c.entity_id)} />
+                    <span>{c.name}</span><span className="mono text-micro text-tertiary">{c.entity_id}</span>
+                    <span className="ml-auto text-micro text-tertiary">{c.has_action ? c.hvac_action : "no hvac_action"}</span>
+                  </label>
+                ))}
+              </div>}
+          </div>
+        )}
+        {picked && !picked.has_action && (
+          <p className="text-micro text-bad">This thermostat doesn't report hvac_action, so no estimate is possible.</p>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Heating kW" hint="gas furnace ≈ blower only, 0.3–0.8 · heat pump / electric 2–5+">
+            <Input value={heatingKW} onChange={(e) => onHeatingKW(e.target.value)} placeholder="0.5" inputMode="decimal" />
+          </Field>
+          <Field label="Cooling kW" hint="central AC ≈ 2–5">
+            <Input value={coolingKW} onChange={(e) => onCoolingKW(e.target.value)} placeholder="3.5" inputMode="decimal" />
+          </Field>
+        </div>
+        {hvac?.entity_id && (
+          <div className="flex flex-wrap items-center gap-2 text-micro text-tertiary">
+            <span>action: {hvac.action || "unknown"}</span>
+            <span>last sample: {hvac.last_ts ? new Date(hvac.last_ts).toLocaleString() : "never"}</span>
+            {hvac.stale && <Badge tone="bad">stale</Badge>}
+          </div>
+        )}
       </CardBody>
     </Card>
   );

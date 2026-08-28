@@ -32,7 +32,7 @@ func testDB(t *testing.T) *DB {
 	// data mid-run (TRUNCATE wouldn't clear materialized buckets). With nothing
 	// materialized, real-time aggregation always reflects current raw rows.
 	_, _ = d.pool.Exec(ctx, `SELECT delete_job(job_id) FROM timescaledb_information.jobs WHERE proc_name = 'policy_refresh_continuous_aggregate'`)
-	_, err = d.pool.Exec(ctx, `TRUNCATE readings, meters, test_windows, capture_heartbeat, reference_samples, utility_energy, meter_index, meter_source, sdr_devices`)
+	_, err = d.pool.Exec(ctx, `TRUNCATE readings, meters, test_windows, capture_heartbeat, reference_samples, hvac_samples, utility_energy, meter_index, meter_source, sdr_devices, settings`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

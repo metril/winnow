@@ -103,6 +103,11 @@ func (d *DB) DailyReconciliation(ctx context.Context, entities []string, tz stri
 	memoKey := ""
 	if len(extraIDs) == 0 {
 		memoKey = tz + "|" + strings.Join(entities, ",")
+		// Fold the HVAC estimate's inputs into the key: a kW edit changes the
+		// monitored energy the screen computes, so it must miss the memo too.
+		if cfg, cerr := d.LoadConfig(ctx); cerr == nil {
+			memoKey += fmt.Sprintf("|%s|%g|%g", cfg.HVACEntityID, cfg.HVACHeatingKW, cfg.HVACCoolingKW)
+		}
 		d.dailyMemo.mu.Lock()
 		if d.dailyMemo.screen != nil && d.dailyMemo.key == memoKey && time.Since(d.dailyMemo.at) < memoTTL {
 			s := d.dailyMemo.screen

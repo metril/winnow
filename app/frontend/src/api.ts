@@ -81,9 +81,11 @@ export interface Status {
   worker_status?: { mqtt_connected: boolean; detail?: string; updated_at: string };
   publish_status?: Record<string, PubStatus>;
   monitored_entities: string[]; monitored_floor_w: number; published: Meter[];
+  hvac?: { entity_id: string; heating_kw: number; cooling_kw: number; configured: boolean; action: string; last_ts: string | null; stale: boolean };
 }
 
 export interface PowerEntity { entity_id: string; name: string; state: string; unit: string; kind: string; }
+export interface ClimateEntity { entity_id: string; name: string; state: string; hvac_action: string; has_action: boolean; }
 export interface UtilityStat { id: string; name: string; unit: string; }
 export interface UtilityComparePoint { ts: string; utility_kwh: number; meter_kwh: number | null; coverage_pct: number; }
 export interface UtilityDayEstimate { day: string; flat_kwh: number; shaped_kwh: number | null; meter_kwh: number | null; }
@@ -245,6 +247,7 @@ export const api = {
   testIntegrations: (body: Record<string, string>) =>
     j<any>("/api/integrations/test", { method: "POST", body: JSON.stringify(body) }),
   powerEntities: () => j<PowerEntity[]>("/api/ha/power-entities"),
+  climateEntities: () => j<ClimateEntity[]>("/api/ha/climate-entities"),
   createHelper: (name: string, entities: string[]) =>
     j<any>("/api/ha/create-helper", { method: "POST", body: JSON.stringify({ name, entities }) }),
   utilityStatistics: () => j<UtilityStat[]>("/api/ha/utility-statistics"),

@@ -377,6 +377,11 @@ func (w *worker) haLoop(ctx context.Context) {
 		entities := cfg.MonitoredEntities
 		openDelta := cfg.ThresholdW
 		autoOn := cfg.AutoWindow
+		hvacOn := cfg.HVACConfigured()
+		subEntities := entities
+		if hvacOn {
+			subEntities = append(append([]string{}, entities...), cfg.HVACEntityID)
+		}
 		client := ha.New(cfg.HAURL, cfg.HAToken)
 		fresh, ferr := buildEntityInfo(ctx, client, entities)
 		w.mu.RLock()
@@ -410,6 +415,9 @@ func (w *worker) haLoop(ctx context.Context) {
 		w.einfoCache = info
 		w.mu.Unlock()
 		log.Printf("[worker] HA WS subscribing to %d monitored entit(ies), %d resolved; auto-window=%v (Δ%.0fW)", len(entities), len(info), autoOn, openDelta)
+		if hvacOn {
+			log.Printf("[worker] HVAC estimate on: entity=%s heat=%.1fkW cool=%.1fkW", cfg.HVACEntityID, cfg.HVACHeatingKW, cfg.HVACCoolingKW)
+		}
 
 		// per-subscription normalization state (callback is single-threaded)
 		lastPower := map[string]float64{}
@@ -440,6 +448,45 @@ func (w *worker) haLoop(ctx context.Context) {
 			w  float64
 		}
 		kaLast := map[string]kaSample{}
+		// hvac tracks the last known hvac_action for the live aggregate + its
+		// own keepalive; guarded by kaMu like kaLast (the ticker touches both).
+		// hvacKA is defined in hvac.go alongside the pure hvacTransition helper.
+		var hvac hvacKA
+
+		if hvacOn {
+			// Seed a sample on (re)connect: without it, an HVAC entity that's
+			// been idle/off since before this subscription started contributes
+			// nothing to the aggregate until its next hvac_action change, which
+			// can be hours away. Best-effort — a failure here must never block
+			// the monitored subscription below.
+			sctx, scancel := context.WithTimeout(subCtx, 15*time.Second)
+			climates, cerr := client.ClimateEntities(sctx)
+			scancel()
+			found := false
+			for _, ce := range climates {
+				if ce.EntityID != cfg.HVACEntityID {
+					continue
+				}
+				found = true
+				if ce.HasAction && ce.HVACAction != "" {
+					now := time.Now()
+					if w.d.InsertHVACSample(subCtx, cfg.HVACEntityID, now, ce.HVACAction) == nil {
+						kaMu.Lock()
+						hvac = hvacKA{set: true, action: ce.HVACAction, ts: now}
+						kaMu.Unlock()
+					}
+				} else {
+					log.Printf("[worker] HVAC entity %s has no active hvac_action yet — seed skipped", cfg.HVACEntityID)
+				}
+				break
+			}
+			if cerr != nil {
+				log.Printf("[worker] HVAC seed: climate entities: %v", cerr)
+			} else if !found {
+				log.Printf("[worker] HVAC entity %s not found in HA states — seed skipped", cfg.HVACEntityID)
+			}
+		}
+
 		go func() {
 			t := time.NewTicker(5 * time.Minute)
 			defer t.Stop()
@@ -458,12 +505,34 @@ func (w *worker) haLoop(ctx context.Context) {
 							}
 						}
 					}
+					if hvac.set && now.Sub(hvac.ts) >= 5*time.Minute {
+						if w.d.InsertHVACSample(subCtx, cfg.HVACEntityID, now, hvac.action) == nil {
+							hvac.ts = now
+						}
+					}
 					kaMu.Unlock()
 				}
 			}
 		}()
 
-		err := ha.Stream(subCtx, cfg.HAURL, cfg.HAToken, entities, func(entity string, s ha.Sample) {
+		// publish computes the live aggregate (monitored entities + the HVAC
+		// estimate) and pushes it to the SSE overlay + auto-window detector.
+		// Called from both onSample and onState so they always agree.
+		publish := func() {
+			kaMu.Lock()
+			agg := 0.0
+			for _, v := range lastPower {
+				agg += v
+			}
+			if hvac.set {
+				agg += hvacWatts(hvac.action, cfg.HVACHeatingKW, cfg.HVACCoolingKW)
+			}
+			kaMu.Unlock()
+			w.d.NotifyReference(subCtx, agg)
+			w.autoWindow(subCtx, agg, openDelta, autoOn)
+		}
+
+		onSample := func(entity string, s ha.Sample) {
 			in, ok := info[entity]
 			if !ok {
 				return
@@ -512,13 +581,38 @@ func (w *worker) haLoop(ctx context.Context) {
 			kaLast[entity] = kaSample{ts: s.TS, w: powerW}
 			kaMu.Unlock()
 			lastPower[entity] = powerW
-			agg := 0.0
-			for _, v := range lastPower {
-				agg += v
+			publish()
+		}
+
+		// onState is StreamStates' non-numeric callback: only the configured
+		// HVAC entity's hvac_action is of interest here (monitored entities'
+		// power/energy samples are handled by onSample above).
+		onState := func(entity string, ev ha.StateEvent) {
+			if !hvacOn || entity != cfg.HVACEntityID {
+				return
 			}
-			w.d.NotifyReference(subCtx, agg)
-			w.autoWindow(subCtx, agg, openDelta, autoOn)
-		})
+			action := ev.Attr("hvac_action")
+			if action == "" {
+				// The thermostat reported no hvac_action (e.g. it just went
+				// unavailable): stop asserting it's still running and
+				// republish the aggregate without it — otherwise the 5-min
+				// keepalive would keep inserting the last-known action for
+				// the whole outage, fabricating kW-scale energy.
+				kaMu.Lock()
+				hvac = hvacTransition(hvac, "", ev.TS)
+				kaMu.Unlock()
+				publish()
+				return
+			}
+			if w.d.InsertHVACSample(subCtx, entity, ev.TS, action) == nil {
+				kaMu.Lock()
+				hvac = hvacTransition(hvac, action, ev.TS)
+				kaMu.Unlock()
+			}
+			publish()
+		}
+
+		err := ha.StreamStates(subCtx, cfg.HAURL, cfg.HAToken, subEntities, onSample, onState)
 		cancel()
 		if err != nil && ctx.Err() == nil {
 			w.setHAStream(ctx, "reconnecting: "+trim(strings.TrimSpace(err.Error()), 120))
@@ -542,6 +636,9 @@ func (w *worker) utilityLoop(ctx context.Context) {
 		w.mu.RUnlock()
 		if cfg.HAConfigured() && cfg.ReferenceConfigured() {
 			w.backfillReferenceGaps(ctx, cfg)
+		}
+		if cfg.HAConfigured() && cfg.HVACConfigured() {
+			w.backfillHVACHistory(ctx, cfg)
 		}
 		if cfg.HAConfigured() && cfg.UtilityConfigured() {
 			if err := w.backfillUtility(ctx, cfg); err != nil {
@@ -640,6 +737,52 @@ func (w *worker) backfillReferenceGaps(ctx context.Context, cfg config.Config) {
 		if filled > 0 {
 			log.Printf("[worker] reference backfill: %s..%s filled with %d statistic samples",
 				lo.Format(time.RFC3339), hi.Format(time.RFC3339), filled)
+		}
+	}
+}
+
+// backfillHVACHistory reconstructs hvac_samples across gaps from HA state
+// history (the recorder's default ~10-day retention), mirroring
+// backfillReferenceGaps: idempotent, tagged history_backfill, live rows never
+// touched. A freshly configured entity has no history before its first live/
+// seed sample, so the leading gap (before the first sample) matters here in a
+// way it doesn't for the always-already-populated reference feed. All range
+// planning (the leading gap, clamping to capEnd, dropping emptied ranges) is
+// the pure planHVACBackfill (hvac.go); this function only does I/O.
+func (w *worker) backfillHVACHistory(ctx context.Context, cfg config.Config) {
+	entity := cfg.HVACEntityID
+	now := time.Now()
+	capEnd := now.Add(-2 * time.Hour)
+	lookback := 10 * 24 * time.Hour
+	minGap := 30 * time.Minute
+
+	first, _ := w.d.HVACSpan(ctx, entity)
+	var gaps [][2]time.Time
+	if first != nil {
+		gaps = w.d.HVACGaps(ctx, entity, lookback, minGap, capEnd)
+	}
+	ranges := planHVACBackfill(first, gaps, now, lookback, minGap, capEnd)
+	if len(ranges) == 0 {
+		return
+	}
+	fctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	client := ha.New(cfg.HAURL, cfg.HAToken)
+	for _, g := range ranges {
+		lo, hi := g[0], g[1]
+		events, err := client.AttrHistory(fctx, entity, lo.Add(-time.Hour), hi)
+		if err != nil {
+			log.Printf("[worker] hvac backfill %s..%s: %v", lo.Format(time.RFC3339), hi.Format(time.RFC3339), err)
+			return
+		}
+		ts, actions := expandHVACHistory(events, lo, hi, 5*time.Minute)
+		if err := w.d.ReplaceHVACBackfill(ctx, entity, lo, hi, ts, actions); err != nil {
+			log.Printf("[worker] hvac backfill insert %s..%s: %v", lo.Format(time.RFC3339), hi.Format(time.RFC3339), err)
+			continue
+		}
+		if len(ts) > 0 {
+			log.Printf("[worker] hvac backfill: %s..%s filled with %d samples",
+				lo.Format(time.RFC3339), hi.Format(time.RFC3339), len(ts))
 		}
 	}
 }

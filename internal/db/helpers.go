@@ -95,6 +95,17 @@ func demingSlope(sxx, syy, sxy float64) float64 {
 	return (syy - sxx + math.Sqrt((syy-sxx)*(syy-sxx)+4*sxy*sxy)) / (2 * sxy)
 }
 
+// settingKW emits a scalar subquery reading a numeric settings value (a kW
+// rate), tolerant of a missing or non-numeric row (defaults to 0, disabling
+// the branch it feeds) and of leading/trailing whitespace (btrim) — the same
+// tolerance config.parseKW applies in Go, so a value the dashboard shows as
+// configured never quietly nets to 0 here. Inlined rather than a CTE:
+// time_bucket_gapfill needs its ts bounds visible in its own WHERE. key is an
+// internal constant, never user input.
+func settingKW(key string) string {
+	return `coalesce((SELECT CASE WHEN btrim(value) ~ '^[0-9]*\.?[0-9]+$' THEN btrim(value)::double precision END FROM settings WHERE key = '` + key + `'), 0)`
+}
+
 // bucketInterval maps a UI bucket token to a Postgres interval literal.
 func bucketInterval(bucket string) string {
 	switch bucket {

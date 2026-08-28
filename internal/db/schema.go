@@ -48,6 +48,18 @@ CREATE INDEX IF NOT EXISTS idx_ref_entity_ts ON reference_samples(entity_id, ts)
 -- the feed really said ('live').
 ALTER TABLE reference_samples ADD COLUMN IF NOT EXISTS src TEXT DEFAULT 'live';
 
+-- hvac_samples holds raw HA climate hvac_action samples (heating/cooling/
+-- idle/…); watts are derived at query time from the hvac_*_kw settings so
+-- retuning the estimate is retroactive. src distinguishes live WS samples
+-- from history-derived backfill: 'live' | 'history_backfill'.
+CREATE TABLE IF NOT EXISTS hvac_samples (
+    ts        TIMESTAMPTZ NOT NULL,
+    entity_id TEXT,
+    action    TEXT,
+    src       TEXT DEFAULT 'live'
+);
+CREATE INDEX IF NOT EXISTS idx_hvac_entity_ts ON hvac_samples(entity_id, ts);
+
 -- utility_energy holds the user's billed energy pulled from HA long-term
 -- statistics (e.g. the Opower/Eversource integration), one row per period bucket
 -- normalized to consumed kWh. This is the user's REAL whole-home meter, used as
@@ -146,6 +158,7 @@ var timescaleSteps = []string{
 	`CREATE EXTENSION IF NOT EXISTS timescaledb`,
 	`SELECT create_hypertable('readings', 'ts', if_not_exists => TRUE, migrate_data => TRUE)`,
 	`SELECT create_hypertable('reference_samples', 'ts', if_not_exists => TRUE, migrate_data => TRUE)`,
+	`SELECT create_hypertable('hvac_samples', 'ts', if_not_exists => TRUE, migrate_data => TRUE)`,
 	`SELECT create_hypertable('utility_energy', 'ts', if_not_exists => TRUE, migrate_data => TRUE)`,
 	`CREATE MATERIALIZED VIEW IF NOT EXISTS readings_1m
 	   WITH (timescaledb.continuous) AS

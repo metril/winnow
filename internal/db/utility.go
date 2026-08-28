@@ -726,7 +726,7 @@ func (d *DB) monitoredDailyKwh(ctx context.Context, entities []string, tz string
 		return out
 	}
 	rows, err := d.pool.Query(ctx, `
-WITH `+refBoundedCTEs("entity_id = ANY($1) AND ts >= $2 AND ts <= $3")+`,
+WITH `+refBoundedCTEs("entity_id = ANY($1)", "ts >= $2 AND ts <= $3")+`,
 per_min AS (SELECT mt, sum(coalesce(w,0)) AS w FROM per_entity GROUP BY mt)
 SELECT (mt AT TIME ZONE $4)::date AS day, sum(w)/60.0/1000.0 AS kwh
 FROM per_min GROUP BY day ORDER BY day`, entities, start, end, tz)

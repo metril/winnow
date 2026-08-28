@@ -150,18 +150,20 @@ func (d *DB) MultiSeries(ctx context.Context, ids []int64, since, until *time.Ti
 
 // AggregateSeries returns the TOTAL monitored power over a window: per entity
 // carried forward within the staleness bound on a per-minute grid, summed
-// across the configured set, then averaged to the requested bucket. A bucket
-// with no in-bound data is OMITTED — the chart draws a gap where the feed was
-// dead, never a fabricated flat line or a fake 0 W.
+// across the configured set (plus the estimated HVAC branch), then averaged to
+// the requested bucket. A bucket with no in-bound REAL monitored data is
+// OMITTED even if the HVAC estimate alone covers it — the chart draws a gap
+// where the feed was dead, never a fabricated flat line or a fake 0 W painted
+// over a dead monitored feed by the estimate.
 func (d *DB) AggregateSeries(ctx context.Context, entities []string, start, end time.Time, bucket string) ([]MultiSeriesPoint, error) {
 	out := []MultiSeriesPoint{}
 	if len(entities) == 0 {
 		return out, nil
 	}
 	q := `
-WITH ` + refBoundedCTEs("entity_id = ANY($1) AND ts >= $2 AND ts <= $3") + `,
+WITH ` + refBoundedCTEs("entity_id = ANY($1)", "ts >= $2 AND ts <= $3") + `,
 per_min AS (
-  SELECT mt, CASE WHEN count(w) > 0 THEN coalesce(sum(w), 0) END AS w
+  SELECT mt, CASE WHEN count(w) FILTER (WHERE NOT is_hvac) > 0 THEN coalesce(sum(w), 0) END AS w
   FROM per_entity GROUP BY mt)
 SELECT time_bucket('` + bucketInterval(bucket) + `', mt) AS b, avg(w) AS power
 FROM per_min GROUP BY b ORDER BY b`

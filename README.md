@@ -160,6 +160,14 @@ Open **Settings → Integrations** and enter:
   check several devices and **Use selected** (winnow sums) or **Create HA sum
   helper** (winnow makes the Group-sum in HA). The **floor** (your minimum draw)
   is shown once samples flow.
+- **HVAC estimate**: pick your thermostat and set heating/cooling kW to add an
+  estimated HVAC draw on top of the monitored set — an add-on, so don't set it
+  if the HVAC's own power sensor is already monitored (it'd be counted twice).
+  The kW are applied at query time, so retuning them is retroactive across all
+  history. History backfills from HA's recorder (~10 days by default), and
+  auto load windows will also see HVAC cycles. The estimate keeps counting
+  while the monitored feed is briefly down; the daily screen still excludes
+  days without real coverage.
 
 Config is stored in the database (secrets masked) — no `.env` editing needed.
 

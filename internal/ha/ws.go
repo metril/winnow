@@ -72,6 +72,22 @@ func authConn(ctx context.Context, base, token string) (*websocket.Conn, func(an
 	return c, read, write, nil
 }
 
+// StateEvent is one state-change notification: when HA recorded it, the new
+// state string, and its attributes (decoded by encoding/json — numbers as
+// float64, nested objects as map[string]any, etc).
+type StateEvent struct {
+	TS         time.Time
+	State      string
+	Attributes map[string]any
+}
+
+// Attr returns attribute `name` as a string, or "" if it's absent or not a
+// string (e.g. a climate entity's hvac_action).
+func (e StateEvent) Attr(name string) string {
+	v, _ := e.Attributes[name].(string)
+	return v
+}
+
 // Stream connects to HA's WebSocket API, authenticates, subscribes to state
 // changes of all `entities`, and calls onSample(entity_id, sample) for each
 // numeric update. Runs until ctx is cancelled or an error occurs (caller
@@ -79,6 +95,15 @@ func authConn(ctx context.Context, base, token string) (*websocket.Conn, func(an
 // dead connection surfaces as an error within wsIdleTimeout — it can never
 // hang silently.
 func Stream(ctx context.Context, base, token string, entities []string, onSample func(string, Sample)) error {
+	return StreamStates(ctx, base, token, entities, onSample, nil)
+}
+
+// StreamStates is Stream plus onState(entity_id, StateEvent) for every event
+// — numeric or not — so callers needing attributes (e.g. a climate entity's
+// hvac_action) don't have to re-subscribe on a second connection. Same auth,
+// subscription, heartbeat, and idle-watchdog behaviour as Stream. Either
+// callback may be nil.
+func StreamStates(ctx context.Context, base, token string, entities []string, onSample func(string, Sample), onState func(string, StateEvent)) error {
 	c, _, write, err := authConn(ctx, base, token)
 	if err != nil {
 		return err
@@ -143,8 +168,12 @@ func Stream(ctx context.Context, base, token string, entities []string, onSample
 		if ts.IsZero() {
 			ts = time.Now().UTC()
 		}
-		if v, err := strconv.ParseFloat(to.State, 64); err == nil {
-			onSample(to.EntityID, Sample{TS: ts.UTC(), Power: v})
+		ts = ts.UTC()
+		if v, err := strconv.ParseFloat(to.State, 64); err == nil && onSample != nil {
+			onSample(to.EntityID, Sample{TS: ts, Power: v})
+		}
+		if onState != nil {
+			onState(to.EntityID, StateEvent{TS: ts, State: to.State, Attributes: to.Attributes})
 		}
 	}
 }
@@ -155,9 +184,10 @@ type wsEvent struct {
 		Variables struct {
 			Trigger struct {
 				ToState struct {
-					EntityID    string    `json:"entity_id"`
-					State       string    `json:"state"`
-					LastUpdated time.Time `json:"last_updated"`
+					EntityID    string         `json:"entity_id"`
+					State       string         `json:"state"`
+					LastUpdated time.Time      `json:"last_updated"`
+					Attributes  map[string]any `json:"attributes"`
 				} `json:"to_state"`
 			} `json:"trigger"`
 		} `json:"variables"`
