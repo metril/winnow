@@ -41,7 +41,7 @@ hvac_raw AS (
          locf(last(action, ts)) AS act,
          locf(max(ts))          AS src_ts
   FROM hvac_samples
-  WHERE entity_id = (SELECT value FROM settings WHERE key = '` + config.KeyHVACEntityID + `') AND ` + tsWhere + `
+  WHERE entity_id = btrim((SELECT value FROM settings WHERE key = '` + config.KeyHVACEntityID + `')) AND ` + tsWhere + `
   GROUP BY mt, entity_id),
 per_entity AS (
   SELECT mt, entity_id,

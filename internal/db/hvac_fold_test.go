@@ -294,6 +294,35 @@ func TestHVACFoldAggregateSeriesOmitsHVACOnlyBuckets(t *testing.T) {
 	}
 }
 
+// TestHVACFoldSettingsWhitespaceTolerant: config.FromMap TrimSpaces the stored
+// hvac_entity_id/kW settings before the worker ever compares against them, so
+// the SQL fold must tolerate the same whitespace a settings row can still hold
+// (e.g. pasted into a form field) rather than silently going dark while the
+// dashboard reports the estimate as healthy.
+func TestHVACFoldSettingsWhitespaceTolerant(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	ctx := context.Background()
+
+	for m := 0; m <= 60; m += 5 {
+		addRefEntity(t, d, "sensor.a", float64(m), 1000) // 1.0 kWh baseline over 1h
+	}
+	// settings rows carry whitespace; hvac_samples use the trimmed entity id,
+	// exactly as config.FromMap + the worker would actually produce.
+	setHVAC(t, d, " climate.t ", "0.5", " 3.0 ")
+	for m := 0; m <= 60; m += 5 {
+		if err := d.InsertHVACSample(ctx, "climate.t", base.Add(time.Duration(m)*time.Minute), "cooling"); err != nil {
+			t.Fatalf("insert cooling: %v", err)
+		}
+	}
+	start, end := base, base.Add(time.Hour)
+	kwh := d.MonitoredEnergy(ctx, []string{"sensor.a"}, start, end)
+	// baseline 1.0 + cooling 1h*3.0kW = 4.0
+	if kwh < 3.9 || kwh > 4.1 {
+		t.Fatalf("whitespace-padded hvac settings = %.3f kWh, want ~4.0 (cooling contribution)", kwh)
+	}
+}
+
 // TestHVACFoldEntityEnergyUnaffected: EntityEnergy (the known-load anchor) must
 // stay exactly the real sensor's own energy, regardless of concurrent HVAC
 // samples.
