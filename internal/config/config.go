@@ -57,6 +57,13 @@ const (
 	KeyCostPerKwh = "cost_per_kwh"
 	KeyCurrency   = "currency"
 
+	// KeyHVACEntityID is the climate.* entity whose hvac_action drives the
+	// estimated HVAC signal. KeyHVACHeatingKW/KeyHVACCoolingKW are the kW drawn
+	// while heating / cooling; 0 disables.
+	KeyHVACEntityID  = "hvac_entity_id"
+	KeyHVACHeatingKW = "hvac_heating_kw"
+	KeyHVACCoolingKW = "hvac_cooling_kw"
+
 	// Remote-agent channel: the app's static Curve25519 keypair, the authorized
 	// agent public keys (JSON array of {label, pubkey}), and the auto-generated
 	// self-signed TLS cert/key for the optional wss listener. Auto-provisioned on
@@ -113,6 +120,9 @@ type Config struct {
 	Capture            CaptureConfig
 	CostPerKwh         float64
 	Currency           string
+	HVACEntityID       string // climate.* entity whose hvac_action drives the estimate
+	HVACHeatingKW      float64
+	HVACCoolingKW      float64
 }
 
 // DeviceConfig is per-dongle capture configuration (keyed by source id). Every
@@ -225,6 +235,14 @@ func FromMap(m map[string]string) Config {
 		mult = 1
 	}
 	cost, _ := strconv.ParseFloat(get(KeyCostPerKwh, "", "0"), 64)
+	hvacHeating, _ := strconv.ParseFloat(get(KeyHVACHeatingKW, "", "0"), 64)
+	if hvacHeating < 0 {
+		hvacHeating = 0
+	}
+	hvacCooling, _ := strconv.ParseFloat(get(KeyHVACCoolingKW, "", "0"), 64)
+	if hvacCooling < 0 {
+		hvacCooling = 0
+	}
 	capture := CaptureConfig{
 		Freq:     get(KeyScanFreq, "FREQ", "912600155"),
 		Gain:     get(KeyScanGain, "GAIN", ""),
@@ -253,6 +271,9 @@ func FromMap(m map[string]string) Config {
 		Capture:            capture,
 		CostPerKwh:         cost,
 		Currency:           get(KeyCurrency, "", "$"),
+		HVACEntityID:       strings.TrimSpace(get(KeyHVACEntityID, "", "")),
+		HVACHeatingKW:      hvacHeating,
+		HVACCoolingKW:      hvacCooling,
 	}
 }
 
@@ -277,6 +298,11 @@ func (c Config) MQTTConfigured() bool { return c.MQTTHost != "" }
 
 // ReferenceConfigured reports whether a monitored set is configured.
 func (c Config) ReferenceConfigured() bool { return len(c.MonitoredEntities) > 0 }
+
+// HVACConfigured reports whether the estimated HVAC signal can be folded in.
+func (c Config) HVACConfigured() bool {
+	return c.HVACEntityID != "" && (c.HVACHeatingKW > 0 || c.HVACCoolingKW > 0)
+}
 
 // DatabaseURL is infra config (not a dashboard setting).
 func DatabaseURL() string {

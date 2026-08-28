@@ -122,40 +122,13 @@ SELECT percentile_cont(0.05) WITHIN GROUP (ORDER BY power) FROM agg WHERE power 
 // ReferenceGaps returns holes (> minGap with zero samples, any entity) in the
 // last `lookback` of the reference feed, including a trailing hole from the
 // last sample to `capEnd` — the work-list for statistics backfill. Gap edges
-// are the surrounding real samples.
+// are the surrounding real samples. Delegates to sampleGaps (hvac.go), shared
+// with HVACGaps so the two queries stay identical.
 func (d *DB) ReferenceGaps(ctx context.Context, entities []string, lookback time.Duration, minGap time.Duration, capEnd time.Time) [][2]time.Time {
-	out := [][2]time.Time{}
 	if len(entities) == 0 {
-		return out
+		return [][2]time.Time{}
 	}
-	rows, err := d.pool.Query(ctx, `
-WITH mins AS (
-  SELECT DISTINCT time_bucket('1 minute', ts) AS mt
-  FROM reference_samples
-  WHERE entity_id = ANY($1) AND ts >= $2),
-g AS (SELECT mt, lag(mt) OVER (ORDER BY mt) AS prev FROM mins)
-SELECT prev, mt FROM g WHERE mt - prev > make_interval(secs => $3) ORDER BY prev`,
-		entities, time.Now().Add(-lookback), minGap.Seconds())
-	if err != nil {
-		return out
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var a, b time.Time
-		if err := rows.Scan(&a, &b); err != nil {
-			return out
-		}
-		out = append(out, [2]time.Time{a, b})
-	}
-	rows.Close()
-	// trailing hole: feed dead right now (or backfill catching up after restart)
-	var last *time.Time
-	_ = d.pool.QueryRow(ctx,
-		`SELECT max(ts) FROM reference_samples WHERE entity_id = ANY($1)`, entities).Scan(&last)
-	if last != nil && capEnd.Sub(*last) > minGap {
-		out = append(out, [2]time.Time{*last, capEnd})
-	}
-	return out
+	return d.sampleGaps(ctx, "reference_samples", "entity_id = ANY($1)", entities, lookback, minGap, capEnd)
 }
 
 // ReplaceBackfillSamples idempotently (re)writes statistics-derived samples for

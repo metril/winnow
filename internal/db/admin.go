@@ -9,7 +9,7 @@ import (
 // adminTables is the fixed set of tables the maintenance page reports on, in a
 // sensible display order (biggest/most-interesting first).
 var adminTables = []string{
-	"readings", "readings_1m", "readings_1h", "reference_samples",
+	"readings", "readings_1m", "readings_1h", "reference_samples", "hvac_samples",
 	"meter_index", "meter_source", "meters", "test_windows", "sdr_devices",
 }
 
